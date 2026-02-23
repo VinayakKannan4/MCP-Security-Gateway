@@ -1,0 +1,279 @@
+version: "1.0"
+name: "Default Gateway Policy"
+description: "Deny-by-default baseline policy covering fs.read, fs.write, and sql.query for the MVP"
+environment: "*"
+
+# Global denylists — applied before all rules, cannot be bypassed by any role
+global_deny:
+  tools:
+    - "shell.*"
+    - "exec.*"
+    - "*.delete_all"
+
+  argument_patterns:
+    - pattern: "ignore\\s+(prior|previous|all)\\s+instructions"
+      label: "PROMPT_INJECTION"
+    - pattern: "disregard\\s+(prior|previous|all|the\\s+above)\\s+(instructions|prompt)"
+      label: "PROMPT_INJECTION"
+    - pattern: "you\\s+are\\s+now\\s+(a|an)\\s+\\w+"
+      label: "PROMPT_INJECTION"
+    - pattern: "act\\s+as\\s+(if\\s+you\\s+are|a|an)\\s+\\w+"
+      label: "PROMPT_INJECTION"
+    - pattern: "(rm|del|format)\\s+-rf"
+      label: "DESTRUCTIVE_COMMAND"
+    - pattern: "curl.+\\|.+bash"
+      label: "SHELL_INJECTION"
+    - pattern: "curl.+\\|.+sh"
+      label: "SHELL_INJECTION"
+    - pattern: "wget.+\\|.+bash"
+      label: "SHELL_INJECTION"
+
+# Tool argument schemas (used in schema validation, step 3)
+tool_schemas:
+  fs.read:
+    required:
+      - path
+    properties:
+      path:
+        type: string
+        maxLength: 512
+
+  fs.write:
+    required:
+      - path
+      - content
+    properties:
+      path:
+        type: string
+        maxLength: 512
+      content:
+        type: string
+        maxLength: 1048576  # 1MB
+
+  sql.query:
+    required:
+      - query
+    properties:
+      query:
+        type: string
+        maxLength: 4096
+
+# Role definitions
+roles:
+  analyst:
+    trust_level: 2
+    description: "Read-only data analyst — can read files and run SELECT queries"
+  developer:
+    trust_level: 3
+    description: "Developer — can read/write files (with approval in prod) and run SELECT queries"
+  admin:
+    trust_level: 4
+    description: "Administrator — full access in dev, approval required in prod"
+
+# Policy rules — evaluated in descending priority order, first match wins
+rules:
+
+  # ===== fs.read rules =====
+
+  - name: "allow-fs-read-authorized"
+    description: "Allow filesystem reads for authorized roles within safe path prefixes"
+    priority: 100
+    tools:
+      - "fs.read"
+    roles:
+      - "analyst"
+      - "developer"
+      - "admin"
+    environments:
+      - "*"
+    decision: ALLOW
+    constraints:
+      path:
+        allowed_prefixes:
+          - "/data/"
+          - "/reports/"
+          - "/tmp/gateway/"
+        denied_patterns:
+          - "\\.\\."
+          - "~"
+          - "/etc/"
+          - "/proc/"
+          - "/sys/"
+          - "/root/"
+          - "\\.ssh"
+          - "\\.aws"
+          - "passwd"
+          - "shadow"
+
+  # ===== fs.write rules =====
+
+  - name: "deny-fs-write-analyst"
+    description: "Analysts have no write access"
+    priority: 95
+    tools:
+      - "fs.write"
+    roles:
+      - "analyst"
+    environments:
+      - "*"
+    decision: DENY
+
+  - name: "require-approval-fs-write-prod"
+    description: "All filesystem writes in production require human approval"
+    priority: 90
+    tools:
+      - "fs.write"
+    roles:
+      - "developer"
+      - "admin"
+    environments:
+      - "prod"
+    decision: APPROVAL_REQUIRED
+    constraints:
+      path:
+        allowed_prefixes:
+          - "/data/output/"
+          - "/tmp/gateway/"
+        denied_patterns:
+          - "\\.\\."
+          - "/etc/"
+          - "/proc/"
+          - "/sys/"
+
+  - name: "require-approval-fs-write-staging"
+    description: "Filesystem writes in staging require human approval"
+    priority: 85
+    tools:
+      - "fs.write"
+    roles:
+      - "developer"
+      - "admin"
+    environments:
+      - "staging"
+    decision: APPROVAL_REQUIRED
+    constraints:
+      path:
+        allowed_prefixes:
+          - "/data/output/"
+          - "/tmp/gateway/"
+        denied_patterns:
+          - "\\.\\."
+          - "/etc/"
+          - "/proc/"
+
+  - name: "allow-fs-write-dev"
+    description: "Developers and admins can write files in dev within allowed paths"
+    priority: 80
+    tools:
+      - "fs.write"
+    roles:
+      - "developer"
+      - "admin"
+    environments:
+      - "dev"
+    decision: ALLOW
+    constraints:
+      path:
+        allowed_prefixes:
+          - "/data/"
+          - "/tmp/gateway/"
+        denied_patterns:
+          - "\\.\\."
+          - "/etc/"
+          - "/proc/"
+          - "/sys/"
+
+  # ===== sql.query rules =====
+
+  - name: "allow-sql-readonly-analysts"
+    description: "Analysts can run read-only SQL queries (SELECT only)"
+    priority: 75
+    tools:
+      - "sql.query"
+    roles:
+      - "analyst"
+    environments:
+      - "*"
+    decision: ALLOW
+    constraints:
+      sql:
+        allowed_statements:
+          - "SELECT"
+        denied_keywords:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "CREATE"
+          - "TRUNCATE"
+          - "EXEC"
+          - "EXECUTE"
+          - "UNION"
+          - "INTO OUTFILE"
+          - "INTO DUMPFILE"
+          - "LOAD_FILE"
+
+  - name: "allow-sql-readonly-developers"
+    description: "Developers can run read-only SQL queries"
+    priority: 70
+    tools:
+      - "sql.query"
+    roles:
+      - "developer"
+    environments:
+      - "*"
+    decision: ALLOW
+    constraints:
+      sql:
+        allowed_statements:
+          - "SELECT"
+        denied_keywords:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "CREATE"
+          - "TRUNCATE"
+          - "EXEC"
+          - "EXECUTE"
+          - "UNION"
+          - "INTO OUTFILE"
+          - "INTO DUMPFILE"
+
+  - name: "allow-sql-all-admin-dev"
+    description: "Admins have full SQL access in dev environments"
+    priority: 65
+    tools:
+      - "sql.query"
+    roles:
+      - "admin"
+    environments:
+      - "dev"
+    decision: ALLOW
+
+  - name: "require-approval-sql-write-admin-prod"
+    description: "Admin SQL writes in production require approval"
+    priority: 60
+    tools:
+      - "sql.query"
+    roles:
+      - "admin"
+    environments:
+      - "prod"
+      - "staging"
+    decision: APPROVAL_REQUIRED
+
+  # ===== Catch-all deny =====
+
+  - name: "deny-all-default"
+    description: "Deny-by-default: any request not matched by a specific rule is denied"
+    priority: 0
+    tools:
+      - "*"
+    roles:
+      - "*"
+    environments:
+      - "*"
+    decision: DENY

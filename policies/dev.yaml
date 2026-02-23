@@ -1,0 +1,124 @@
+version: "1.0"
+name: "Development Policy"
+description: "Relaxed policy for local development — fewer approval requirements"
+environment: "dev"
+
+# Inherit global deny from default — prompt injection and shell injection are always blocked
+global_deny:
+  tools:
+    - "shell.*"
+    - "exec.*"
+
+  argument_patterns:
+    - pattern: "ignore\\s+(prior|previous|all)\\s+instructions"
+      label: "PROMPT_INJECTION"
+    - pattern: "curl.+\\|.+bash"
+      label: "SHELL_INJECTION"
+
+tool_schemas:
+  fs.read:
+    required:
+      - path
+    properties:
+      path:
+        type: string
+        maxLength: 512
+  fs.write:
+    required:
+      - path
+      - content
+    properties:
+      path:
+        type: string
+        maxLength: 512
+      content:
+        type: string
+        maxLength: 10485760  # 10MB — relaxed for dev
+  sql.query:
+    required:
+      - query
+    properties:
+      query:
+        type: string
+        maxLength: 8192  # relaxed for dev
+
+roles:
+  analyst:
+    trust_level: 2
+  developer:
+    trust_level: 3
+  admin:
+    trust_level: 4
+
+rules:
+  - name: "allow-fs-read-dev"
+    description: "Allow broad filesystem reads in dev (still block traversal)"
+    priority: 100
+    tools:
+      - "fs.read"
+    roles:
+      - "analyst"
+      - "developer"
+      - "admin"
+    environments:
+      - "dev"
+    decision: ALLOW
+    constraints:
+      path:
+        allowed_prefixes:
+          - "/data/"
+          - "/tmp/"
+          - "/reports/"
+          - "/workspace/"
+        denied_patterns:
+          - "\\.\\."
+          - "/etc/shadow"
+          - "/etc/passwd"
+          - "\\.ssh"
+          - "\\.aws"
+
+  - name: "allow-fs-write-dev"
+    description: "Allow filesystem writes in dev (no approval needed)"
+    priority: 90
+    tools:
+      - "fs.write"
+    roles:
+      - "developer"
+      - "admin"
+    environments:
+      - "dev"
+    decision: ALLOW
+    constraints:
+      path:
+        allowed_prefixes:
+          - "/data/"
+          - "/tmp/"
+          - "/workspace/"
+        denied_patterns:
+          - "\\.\\."
+          - "/etc/"
+          - "/proc/"
+
+  - name: "allow-sql-all-dev"
+    description: "All roles can run any SQL in dev"
+    priority: 80
+    tools:
+      - "sql.query"
+    roles:
+      - "analyst"
+      - "developer"
+      - "admin"
+    environments:
+      - "dev"
+    decision: ALLOW
+
+  - name: "deny-all-default"
+    description: "Catch-all deny"
+    priority: 0
+    tools:
+      - "*"
+    roles:
+      - "*"
+    environments:
+      - "*"
+    decision: DENY
