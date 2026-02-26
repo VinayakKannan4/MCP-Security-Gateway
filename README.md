@@ -229,8 +229,8 @@ uv run python scripts/run_benchmark.py
 | Phase | Status | Description |
 |-------|--------|-------------|
 | **1 — Foundation** | ✅ Complete | Policy engine, models, constraints, YAML loader, 77 unit tests |
-| **2 — Persistence** | 🔲 Next | PostgreSQL audit log, Redis approval tokens, Alembic migrations |
-| **3 — LLM Agents** | 🔲 Planned | Risk classifier, argument guard, policy reasoner, audit summarizer |
+| **2 — Persistence** | ✅ Complete | PostgreSQL audit log, Redis approval tokens, Alembic migrations, 143 tests |
+| **3 — LLM Agents** | 🔲 Next | Risk classifier, argument guard, policy reasoner, audit summarizer |
 | **4 — API + Pipeline** | 🔲 Planned | FastAPI endpoints, full 10-step enforcement pipeline |
 | **5 — Benchmark** | 🔲 Planned | 10-scenario security benchmark suite, red-team agent |
 | **6 — UI + Infra** | 🔲 Planned | React dashboard, Docker Compose, CI/CD pipeline |

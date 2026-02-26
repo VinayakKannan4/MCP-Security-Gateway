@@ -1,302 +1,237 @@
-# Phase 2 Tasks — Persistence Layer
+# Phase 3 Tasks — LLM Agents Layer
 
-**Status**: Phase 1 complete (77/77 unit tests passing). Phase 2 not started.
-**Branch**: `phase2`
-**No Docker needed** until Group 7 (integration tests). Groups 1–5 are pure Python + unit tests.
-
----
-
-## Prerequisite — add fakeredis dev dep
-
-```bash
-/Users/vinayakkannan/.local/bin/uv add --dev fakeredis
-```
+**Status**: Not started — 143/143 tests passing from Phase 2 (121 unit + 22 integration).
+**Branch**: `phase2` (open PR or merge, then cut `phase3`)
 
 ---
 
-## Group 1 — DB Foundation
+## Phase 2 Complete ✅
 
-### 1a. `gateway/db/__init__.py`
-Empty package marker.
-
-### 1b. `gateway/db/session.py`
-- `engine = create_async_engine(settings.database_url, echo=False)`
-- `async_session_factory = async_sessionmaker(engine, expire_on_commit=False)`
-- `Base = DeclarativeBase()` — imported by all ORM models
-- `get_db() -> AsyncGenerator[AsyncSession, None]` — FastAPI dependency
-
-### 1c. `gateway/db/models.py`
-Three SQLAlchemy ORM tables (import `Base` from `session.py`):
-
-**`ApiKey`** (`api_keys` table):
-- `id: Mapped[int]` — primary key
-- `caller_id: Mapped[str]` — unique, indexed
-- `key_hash: Mapped[str]` — bcrypt hash, NEVER plaintext
-- `role: Mapped[str]`
-- `trust_level: Mapped[int]` — maps to `TrustLevel` IntEnum
-- `environment: Mapped[str]`
-- `is_active: Mapped[bool]` — default True
-- `created_at: Mapped[datetime]` — server_default=now()
-- `last_used_at: Mapped[datetime | None]`
-
-**`AuditEventRow`** (`audit_events` table):
-- Mirror every field from `gateway/models/audit.py:AuditEvent`
-- `raw_args_hash: Mapped[str]` — SHA-256 hex, NEVER raw args
-- `sanitized_args: Mapped[dict]` — `JSONB` column type
-- `redaction_flags: Mapped[list]` — `JSONB` column type
-- `risk_labels: Mapped[list]` — `JSONB` column type
-- `request_id: Mapped[str]` — unique, indexed
-- `timestamp: Mapped[datetime]` — indexed (for range queries)
-- `caller_id: Mapped[str]` — indexed
-
-**`ApprovalRequestRow`** (`approval_requests` table):
-- Mirror every field from `gateway/models/approval.py:ApprovalRequest`
-- `token: Mapped[str]` — unique, indexed (lookup key)
-- `tool_call: Mapped[dict]` — `JSONB` column type
-- `status: Mapped[str]` — default "PENDING", indexed
-
-**Verify**: `python -c "from gateway.db.models import ApiKey, AuditEventRow, ApprovalRequestRow"` — no errors.
+All 7 groups done:
+- DB models + Alembic migrations
+- Redis client (TTL-required `set_json`)
+- AuditLogger (never raises, never stores raw args) + AuditQuery
+- ApprovalManager (Redis fast path + Postgres durability)
+- Docker Compose dev + test stacks
+- Integration tests (savepoint-based per-test isolation)
 
 ---
 
-## Group 2 — Alembic Setup
+## Phase 3 — LLM Agents Layer
 
-### 2a. `alembic.ini` (project root)
-- `script_location = gateway/db/migrations`
-- `sqlalchemy.url` — leave as placeholder (overridden in env.py via settings)
-
-### 2b. `gateway/db/migrations/env.py`
-- Async env (use `run_async_migrations`)
-- Import `Base` from `gateway.db.models`
-- Pull DB URL from `gateway.config.settings.database_url`
-- `target_metadata = Base.metadata`
-
-### 2c. `gateway/db/migrations/script.py.mako`
-Standard Alembic template (copy from alembic default).
-
-### 2d. `gateway/db/migrations/versions/0001_initial.py`
-- `op.create_table("api_keys", ...)` — all columns
-- `op.create_table("audit_events", ...)` — all columns, JSONB for dicts/lists
-- `op.create_table("approval_requests", ...)` — all columns, JSONB for tool_call
-- Create all indexes defined in the models
-
-**Note**: `JSONB` requires `from sqlalchemy.dialects.postgresql import JSONB` in the migration.
+The agents live in `gateway/agents/`. They make Anthropic SDK calls.
+No LangChain. All agents return typed Pydantic models.
+Agents do NOT call each other — pipeline.py orchestrates.
 
 ---
 
-## Group 3 — Redis Client
+## Group 1 — BaseAgent
 
-### 3a. `gateway/cache/__init__.py`
-Empty package marker.
+### `gateway/agents/__init__.py`
+Empty init — export `BaseAgent`, `RiskClassifierAgent`, `ArgumentGuardAgent`.
 
-### 3b. `gateway/cache/redis_client.py`
+### `gateway/agents/base.py`
+
+Abstract class all agents inherit from.
+
 ```python
-# get_redis() -> AsyncGenerator[Redis, None]   FastAPI dependency
-# Typed helpers:
-#   set_json(client, key, value: dict, ttl: int) -> None
-#   get_json(client, key) -> dict | None
-#   delete(client, key) -> None
-```
-- Use `redis.asyncio.Redis.from_url(settings.redis_url, decode_responses=True)`
-- `set_json` must always set TTL — never store without expiry (security invariant)
+class BaseAgent(ABC):
+    def __init__(self, settings: Settings) -> None:
+        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._model = settings.llm_model
+        self._timeout = settings.llm_timeout_seconds
+        self._max_retries = settings.llm_max_retries
 
-### 3c. Unit test: `tests/unit/test_redis_client.py`
-- Use `fakeredis.aioredis.FakeRedis` as the client
-- Test `set_json → get_json` roundtrip
-- Test TTL expiry (fakeredis supports time manipulation)
-- Test `get_json` returns `None` for missing key
-- Mark `@pytest.mark.unit`
+    async def _call(self, system: str, prompt: str) -> str:
+        """Make an Anthropic messages.create call with timeout + retry.
+        Returns the raw text of the first content block.
+        Raises on final failure (callers handle).
+        """
+        ...
+
+    @staticmethod
+    def _extract_tag(raw: str, tag: str) -> str | None:
+        """Return content inside <tag>...</tag>, stripped. None if not found."""
+        ...
+
+    @abstractmethod
+    def parse_response(self, raw: str) -> BaseModel: ...
+```
+
+Key behaviours:
+- Retry loop up to `_max_retries` times on `APIError` / timeout
+- Log prompt at DEBUG before call, log response at DEBUG after
+- LLM never sees: caller_id, raw API keys, policy rule names, raw tool args
 
 ---
 
-## Group 4 — Audit Layer
+## Group 2 — RiskClassifierAgent
 
-### 4a. `gateway/audit/__init__.py`
-Empty package marker.
+### `gateway/agents/risk_classifier.py`
 
-### 4b. `gateway/audit/logger.py`
+Input: `ToolCall`, optional `context: str`
+Output: `RiskAssessment` (from `gateway/models/risk.py`)
+
 ```python
-class AuditLogger:
-    def __init__(self, session: AsyncSession) -> None: ...
-    async def write(self, event: AuditEvent) -> None:
-        # Map AuditEvent → AuditEventRow
-        # session.add(row); await session.commit()
-        # NEVER store raw args — AuditEvent already enforces raw_args_hash
-```
-- Must be safe to call even if the request errored (no exceptions should propagate out)
-- Wrap commit in try/except — log error but do not re-raise (audit must not crash the pipeline)
+class RiskClassifierAgent(BaseAgent):
+    SYSTEM_PROMPT: ClassVar[str] = """..."""
 
-### 4c. `gateway/audit/query.py`
-```python
-class AuditQuery:
-    def __init__(self, session: AsyncSession) -> None: ...
-    async def get_by_request_id(self, request_id: str) -> AuditEvent | None: ...
-    async def list_by_caller(self, caller_id: str, limit: int = 50, offset: int = 0) -> list[AuditEvent]: ...
-    async def list_by_decision(self, decision: str, limit: int = 50) -> list[AuditEvent]: ...
-    async def list_recent(self, limit: int = 100) -> list[AuditEvent]: ...
-```
-- All queries ordered by `timestamp DESC`
-- Return Pydantic `AuditEvent` objects (not ORM rows) — convert in query methods
+    async def classify(self, tool_call: ToolCall, context: str | None = None) -> RiskAssessment:
+        # 1. Run deterministic heuristics first
+        heuristic_result = self._run_heuristics(tool_call)
+        if heuristic_result.score >= 0.8:
+            return heuristic_result  # skip LLM — fast path
 
-### 4d. Unit test: `tests/unit/test_audit_logger.py`
-- Mock `AsyncSession` (use `unittest.mock.AsyncMock`)
-- Verify `write()` calls `session.add()` with an `AuditEventRow`
-- Verify `raw_args_hash` is stored, not raw args
-- Verify `write()` does not raise even when `session.commit()` raises
-- Mark `@pytest.mark.unit`
+        # 2. Call LLM for nuanced classification
+        prompt = self._build_prompt(tool_call, context, heuristic_result)
+        raw = await self._call(self.SYSTEM_PROMPT, prompt)
+        result = self.parse_response(raw)
+        result.llm_consulted = True
+        result.triggered_heuristics = heuristic_result.triggered_heuristics
+        return result
+
+    def _run_heuristics(self, tool_call: ToolCall) -> RiskAssessment:
+        """Regex patterns against serialized args string. Returns score 0.0–1.0.
+        Patterns checked:
+        - PROMPT_INJECTION: "ignore.*instructions", "system prompt", "jailbreak", etc.
+        - PATH_TRAVERSAL: "../", "%2e%2e%2f", "..\\", etc.
+        - SHELL_INJECTION: "; rm -rf", "| bash", "$(", "`" etc.
+        - PII patterns: email, SSN (XXX-XX-XXXX), credit card (16-digit)
+        Score rules:
+          - PROMPT_INJECTION → 0.95 (hard high)
+          - SHELL_INJECTION  → 0.95
+          - PATH_TRAVERSAL   → 0.85
+          - PII only         → 0.5
+          - None             → 0.0
+        """
+        ...
+
+    def parse_response(self, raw: str) -> RiskAssessment:
+        """Extract <risk_labels>, <risk_score>, <explanation> XML tags."""
+        ...
+```
+
+**SYSTEM_PROMPT** tells the LLM to:
+- Classify the tool call into zero or more `RiskLabel` values
+- Output a `risk_score` float between 0.0–1.0
+- Explain its reasoning in `<explanation>`
+- Never reveal internal policy rules
+
+XML tags in response: `<risk_labels>`, `<risk_score>`, `<explanation>`
 
 ---
 
-## Group 5 — Approval Layer
+## Group 3 — ArgumentGuardAgent
 
-### 5a. `gateway/approval/__init__.py`
-Empty package marker.
+### `gateway/agents/argument_guard.py`
 
-### 5b. `gateway/approval/manager.py`
+Input: `ToolCall`
+Output: `tuple[dict[str, Any], list[RedactionFlag]]` (sanitized args, flags)
+
 ```python
-class ApprovalManager:
-    def __init__(self, session: AsyncSession, redis: Redis) -> None: ...
+class ArgumentGuardAgent(BaseAgent):
+    SYSTEM_PROMPT: ClassVar[str] = """..."""
 
-    async def issue_token(self, request: ApprovalRequest) -> str:
-        # 1. Store full ApprovalRequest JSON in Redis with TTL
-        #    key = f"approval:{request.token}"
-        #    ttl = settings.approval_token_ttl_seconds
-        # 2. Store ApprovalRequestRow in Postgres for durability
-        # 3. Return request.token
+    async def sanitize(
+        self, tool_call: ToolCall
+    ) -> tuple[dict[str, Any], list[RedactionFlag]]:
+        # Phase 1: deterministic redaction (always runs)
+        sanitized, flags = self._deterministic_sanitize(tool_call.arguments)
 
-    async def check_token(self, token: str) -> ApprovalResult:
-        # 1. Try Redis first (fast path)
-        # 2. Fall back to Postgres SELECT if Redis miss
-        # 3. Return ApprovalResult; raise ValueError if not found
+        # Phase 2: LLM inspection only if deterministic phase flagged ambiguity
+        if self._needs_llm_review(flags, tool_call):
+            prompt = self._build_prompt(tool_call, sanitized)
+            raw = await self._call(self.SYSTEM_PROMPT, prompt)
+            llm_flags = self._parse_llm_flags(raw)
+            # Apply LLM-suggested redactions on top of deterministic ones
+            sanitized, flags = self._apply_llm_flags(sanitized, flags, llm_flags)
 
-    async def approve(self, token: str, approver_id: str, note: str = "") -> ApprovalResult:
-        # 1. check_token (raises if not found or already decided)
-        # 2. Update status=APPROVED in both Redis + Postgres
-        # 3. Return ApprovalResult
+        return sanitized, flags
 
-    async def deny(self, token: str, approver_id: str, note: str = "") -> ApprovalResult:
-        # Same as approve but status=DENIED
+    def _deterministic_sanitize(
+        self, args: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[RedactionFlag]]:
+        """Regex-based redaction. Patterns:
+        - Email addresses → "[REDACTED_EMAIL]"
+        - SSN (XXX-XX-XXXX) → "[REDACTED_SSN]"
+        - Credit card numbers (16-digit runs) → "[REDACTED_CC]"
+        - API key / token patterns (sk-..., Bearer ..., etc.) → "[REDACTED_SECRET]"
+        - Path traversal sequences (../*, %2e%2e*) → normalized path
+        Flag: original_hash = SHA-256 hex of original value
+        """
+        ...
+
+    def parse_response(self, raw: str) -> list[dict[str, Any]]:
+        """Extract <redaction_flags> XML block → list of {field, reason, original_hash}."""
+        ...
 ```
-- Tokens are already `secrets.token_urlsafe(32)` from the Pydantic model's `default_factory`
-- Redis key pattern: `approval:{token}`
-- Always set TTL on Redis writes — never store without expiry
 
-### 5c. `gateway/approval/notifier.py`
-```python
-class ApprovalNotifier:
-    async def notify_pending(self, request: ApprovalRequest) -> None:
-        # Stub: log at INFO level
-        # Future: POST to webhook URL from settings
-        logger.info("APPROVAL_REQUIRED request_id=%s token=%s", request.request_id, "***")
-
-    async def notify_decision(self, result: ApprovalResult) -> None:
-        # Stub: log at INFO level
-        logger.info("APPROVAL_DECIDED status=%s", result.status)
-```
-- Never log the token value — log `"***"` or omit
-
-### 5d. Unit test: `tests/unit/test_approval_manager.py`
-- Use `fakeredis.aioredis.FakeRedis` + mocked `AsyncSession`
-- Test `issue_token → check_token` roundtrip (Redis fast path)
-- Test `check_token` Postgres fallback when Redis miss
-- Test `approve` updates status in both Redis + Postgres
-- Test `deny` updates status
-- Test `check_token` raises on unknown token
-- Mark `@pytest.mark.unit`
+**SYSTEM_PROMPT** tells the LLM to:
+- Inspect tool arguments for PII, secrets, or dangerous patterns
+- Suggest any additional fields that should be redacted
+- Output `<redaction_flags>` as JSON array inside the tag
+- Never fabricate data — only report what's present
 
 ---
 
-## Group 6 — Infrastructure Files
+## Group 4 — Unit Tests
 
-### 6a. `docker-compose.yml`
-Services:
-- `postgres`: `postgres:17-alpine`, port 5432, volume for data persistence
-- `redis`: `redis:7-alpine`, port 6379
-- `otel-collector`: `otel/opentelemetry-collector:latest`, port 4317
-- `gateway`: build from `Dockerfile` (to be created in Phase 4), depends on postgres+redis
+### `tests/unit/test_base_agent.py`
+- `_extract_tag` finds tag content correctly
+- `_extract_tag` returns None for missing tags
+- `_call` returns text on success (mock `AsyncAnthropic`)
+- `_call` retries up to `max_retries` on `APIError`
+- `_call` raises after exhausting retries
 
-### 6b. `docker-compose.test.yml`
-- `postgres` + `redis` only (no gateway, no otel)
-- Use separate DB name `gateway_test` to avoid clobbering dev data
+### `tests/unit/test_risk_classifier.py`
+- Heuristic path: prompt injection pattern → score >= 0.8, LLM not called
+- Heuristic path: shell injection → score >= 0.8, LLM not called
+- Heuristic path: path traversal → score >= 0.8, LLM not called
+- Heuristic path: no patterns → score 0.0, LLM called
+- LLM path: `parse_response` correctly extracts XML tags → `RiskAssessment`
+- LLM path: `parse_response` handles missing tags with safe defaults
+- PII heuristic: email in args → `PII_SENSITIVE` label + score 0.5
+- `llm_consulted=True` only when LLM was actually called
 
-### 6c. `.env.example`
-```
-ENVIRONMENT=dev
-DATABASE_URL=postgresql+asyncpg://gateway:gateway@localhost:5432/gateway
-REDIS_URL=redis://localhost:6379/0
-ANTHROPIC_API_KEY=sk-ant-...
-ADMIN_API_KEY=...
-APPROVAL_TOKEN_TTL_SECONDS=3600
-OTEL_ENABLED=false
-```
-
-### 6d. `scripts/seed_policies.py`
-- Load `policies/default.yaml`
-- Insert a test `ApiKey` row for local dev (caller_id="dev-agent", role="developer", trust_level=2)
-- Print the plaintext API key once (never store it — only the bcrypt hash goes in DB)
-
----
-
-## Group 7 — Integration Tests (requires Docker)
-
-> **Start Docker first**: `docker compose -f docker-compose.test.yml up -d`
-> **Run migrations**: `/Users/vinayakkannan/.local/bin/uv run alembic upgrade head`
-
-### 7a. `tests/integration/__init__.py`
-Empty package marker.
-
-### 7b. `tests/integration/conftest.py`
-```python
-# Fixtures:
-# - db_engine: create_async_engine pointing at test DB
-# - db_session: AsyncSession, rolls back after each test
-# - redis_client: real Redis connection to test instance
-# - audit_logger: AuditLogger(session)
-# - approval_manager: ApprovalManager(session, redis)
-```
-- Each test gets a clean DB state via rollback (not drop/recreate — faster)
-
-### 7c. `tests/integration/test_audit_logger.py`
-- Write an `AuditEvent` → query it back by `request_id`
-- Verify `raw_args_hash` stored correctly
-- Verify `sanitized_args` JSONB roundtrip
-- Verify `list_by_caller` returns correct rows
-- Verify `list_by_decision` filters correctly
-- Mark `@pytest.mark.integration`
-
-### 7d. `tests/integration/test_approval_manager.py`
-- Full `issue → check → approve` flow against real Redis + Postgres
-- Verify Redis TTL is set (use `redis.ttl(key)`)
-- Verify Postgres fallback when Redis key manually deleted
-- Verify cannot approve an already-decided token
-- Mark `@pytest.mark.integration`
+### `tests/unit/test_argument_guard.py`
+- Email in args → redacted to `[REDACTED_EMAIL]` + `RedactionFlag` with reason `PII_EMAIL`
+- SSN pattern → redacted + flagged
+- API key pattern → redacted + flagged with reason `SECRET_TOKEN`
+- Path traversal → normalized + flagged
+- Clean args → empty flags, args unchanged
+- `_needs_llm_review` returns False for empty flags (no LLM call on clean args)
+- LLM path invoked when flags present (mock LLM response with additional flag)
+- `original_hash` in flag is SHA-256 of original value (not `[REDACTED_*]`)
 
 ---
 
 ## Run Commands
 
 ```bash
-# After each group — run unit tests to verify nothing broke
-/Users/vinayakkannan/.local/bin/uv run python -m pytest -m unit
+# Unit tests (no Docker, no LLM key needed — all agents mocked)
+/Users/vinayakkannan/.local/bin/uv run python -m pytest -m unit -v
 
-# After Group 7 (with Docker running)
-docker compose -f docker-compose.test.yml up -d
-/Users/vinayakkannan/.local/bin/uv run alembic upgrade head
-/Users/vinayakkannan/.local/bin/uv run python -m pytest -m integration
+# All tests (integration requires Docker)
+/Users/vinayakkannan/.local/bin/uv run python -m pytest -v
+
+# Type check
+/Users/vinayakkannan/.local/bin/uv run mypy gateway/ --strict
+
+# Lint
+/Users/vinayakkannan/.local/bin/uv run ruff check gateway/ tests/
 ```
 
 ---
 
-## CLAUDE.md Updates Needed After Phase 2
+## Notes
 
-Add these entries to the Key File Map table in `CLAUDE.md`:
+- No real Anthropic API key needed for unit tests — mock `AsyncAnthropic` using `unittest.mock.AsyncMock`
+- Agents must NOT be tested with live API calls in the unit suite — always mock `_call`
+- If you want to do a live smoke test: set `ANTHROPIC_API_KEY` in `.env` and call `classify()` manually in a scratch script
+- Phase 4 will wire these agents into `gateway/enforcement/pipeline.py`
 
-| What | Where |
-|------|-------|
-| **SQLAlchemy ORM models** | `gateway/db/models.py` |
-| **Async DB session** | `gateway/db/session.py` |
-| **Redis client + helpers** | `gateway/cache/redis_client.py` |
-| **Audit logger** | `gateway/audit/logger.py` |
-| **Audit query** | `gateway/audit/query.py` |
-| **Approval manager** | `gateway/approval/manager.py` |
-| **Approval notifier** | `gateway/approval/notifier.py` |
+---
+
+## CLAUDE.md — already updated ✅
+
+Key File Map already has entries for all Phase 3 files (`gateway/agents/`).

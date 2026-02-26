@@ -52,13 +52,19 @@ docker compose -f docker-compose.test.yml up -d  # Test stack only
 | **LLM agent base class** | `gateway/agents/base.py` |
 | **Risk classifier** | `gateway/agents/risk_classifier.py` |
 | **Argument guard / sanitizer** | `gateway/agents/argument_guard.py` |
-| **Approval token manager** | `gateway/approval/manager.py` |
-| **Audit logger** | `gateway/audit/logger.py` |
 | **Pydantic schemas** | `gateway/models/` |
 | **FastAPI app factory** | `gateway/main.py` |
 | **Core gateway endpoint** | `gateway/api/v1/gateway.py` |
 | **App settings** | `gateway/config.py` |
 | **Default policy** | `policies/default.yaml` |
+| **SQLAlchemy ORM models** | `gateway/db/models.py` |
+| **Async DB session + Base** | `gateway/db/session.py` |
+| **Alembic migrations** | `gateway/db/migrations/` |
+| **Redis client + helpers** | `gateway/cache/redis_client.py` |
+| **Audit logger (append-only)** | `gateway/audit/logger.py` |
+| **Audit query (dashboard reads)** | `gateway/audit/query.py` |
+| **Approval token manager** | `gateway/approval/manager.py` |
+| **Approval notifier (stub)** | `gateway/approval/notifier.py` |
 
 ---
 
