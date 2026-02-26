@@ -2,7 +2,7 @@
 
 ## Vulnerability Disclosure
 
-If you discover a security vulnerability, please report it privately to [security@your-org.com] rather than opening a public GitHub issue. We will acknowledge receipt within 48 hours and aim to release a fix within 14 days for critical issues.
+If you discover a security vulnerability, please report it privately to [vinayakk98@gmail.com] rather than opening a public GitHub issue. We will acknowledge receipt within 48 hours and aim to release a fix within 14 days for critical issues.
 
 Please include:
 - Description of the vulnerability
