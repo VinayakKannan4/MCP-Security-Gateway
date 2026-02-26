@@ -128,3 +128,8 @@ ignore_missing_imports = true
 [tool.bandit]
 exclude_dirs = ["tests", "scripts"]
 skips = ["B101"]  # assert_used - we use asserts intentionally in red team guard
+
+[dependency-groups]
+dev = [
+    "fakeredis>=2.34.1",
+]
