@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     otel_endpoint: str = "http://localhost:4317"
     otel_enabled: bool = False
 
+    # MCP executor
+    mcp_server_base_urls: dict[str, str] = {}  # e.g. {"filesystem-mcp": "http://localhost:9001"}
+    mcp_tool_timeout_seconds: float = 30.0
+
     # Security
     admin_api_key: str = ""  # separate key for admin endpoints
 
