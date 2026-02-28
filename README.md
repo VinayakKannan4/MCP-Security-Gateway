@@ -236,8 +236,8 @@ uv run python scripts/run_benchmark.py
 | **1 — Foundation** | ✅ Complete | Policy engine, models, constraints, YAML loader — 77 unit tests |
 | **2 — Persistence** | ✅ Complete | PostgreSQL audit log, Redis approval tokens, Alembic migrations — 143 tests |
 | **3 — LLM Agents** | ✅ Complete | BaseAgent, RiskClassifierAgent (Groq 70B), ArgumentGuardAgent (Groq 8B) — 153 tests |
-| **4 — API + Pipeline** | 🔲 Next | FastAPI endpoints, full 10-step enforcement pipeline, MCPExecutor |
-| **5 — Benchmark** | 🔲 Planned | 10-scenario security benchmark suite, red-team agent |
+| **4 — API + Pipeline** | ✅ Complete | FastAPI app, full 10-step enforcement pipeline, MCPExecutor — 180 unit tests |
+| **5 — Benchmark** | 🔲 Next | 10-scenario security benchmark suite, RedTeamAttackerAgent |
 | **6 — UI + Infra** | 🔲 Planned | React dashboard, Docker Compose, CI/CD pipeline |
 
 ---
