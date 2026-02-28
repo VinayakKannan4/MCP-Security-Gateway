@@ -81,6 +81,7 @@ The initial release covers three tool types:
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (package manager)
 - Docker + Docker Compose
+- A [Groq API key](https://console.groq.com) (free tier) — or run [Ollama](https://ollama.com) locally
 
 ### Install
 
@@ -90,6 +91,10 @@ cd MCP-Security-Gateway
 
 # Install dependencies
 uv sync
+
+# Configure LLM provider (Groq recommended — free tier)
+cp .env.example .env
+# Edit .env and set LLM_API_KEY=gsk_...
 
 # Start infrastructure
 docker compose up postgres redis -d
@@ -135,7 +140,7 @@ curl -X POST http://localhost:8000/v1/gateway/invoke \
 | Concern | Choice |
 |---------|--------|
 | API | FastAPI + Pydantic |
-| LLM calls | Anthropic SDK (direct — no LangChain) |
+| LLM calls | Groq (free) / Ollama (local) / Anthropic — direct SDK, no LangChain |
 | Database | PostgreSQL + SQLAlchemy async |
 | State / Approvals | Redis |
 | Policy engine | In-house YAML evaluator |
@@ -228,10 +233,10 @@ uv run python scripts/run_benchmark.py
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| **1 — Foundation** | ✅ Complete | Policy engine, models, constraints, YAML loader, 77 unit tests |
-| **2 — Persistence** | ✅ Complete | PostgreSQL audit log, Redis approval tokens, Alembic migrations, 143 tests |
-| **3 — LLM Agents** | 🔲 Next | Risk classifier, argument guard, policy reasoner, audit summarizer |
-| **4 — API + Pipeline** | 🔲 Planned | FastAPI endpoints, full 10-step enforcement pipeline |
+| **1 — Foundation** | ✅ Complete | Policy engine, models, constraints, YAML loader — 77 unit tests |
+| **2 — Persistence** | ✅ Complete | PostgreSQL audit log, Redis approval tokens, Alembic migrations — 143 tests |
+| **3 — LLM Agents** | ✅ Complete | BaseAgent, RiskClassifierAgent (Groq 70B), ArgumentGuardAgent (Groq 8B) — 153 tests |
+| **4 — API + Pipeline** | 🔲 Next | FastAPI endpoints, full 10-step enforcement pipeline, MCPExecutor |
 | **5 — Benchmark** | 🔲 Planned | 10-scenario security benchmark suite, red-team agent |
 | **6 — UI + Infra** | 🔲 Planned | React dashboard, Docker Compose, CI/CD pipeline |
 

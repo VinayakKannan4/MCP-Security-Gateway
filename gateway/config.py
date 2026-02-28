@@ -20,11 +20,22 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # LLM
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-6"
+    # LLM — provider selection
+    # "anthropic": uses AsyncAnthropic + anthropic_api_key
+    # "openai_compat": uses AsyncOpenAI with custom base_url + llm_api_key (Groq, Ollama, etc.)
+    llm_provider: Literal["anthropic", "openai_compat"] = "openai_compat"
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_api_key: str = ""  # Groq / Ollama / other OpenAI-compat key
+    anthropic_api_key: str = ""  # kept for anthropic provider
+    llm_model: str = "llama-3.3-70b-versatile"  # default; agents override per-agent
     llm_timeout_seconds: float = 10.0
     llm_max_retries: int = 2
+
+    # Per-agent model overrides
+    # RiskClassifierAgent: needs nuanced semantic reasoning → 70B
+    risk_classifier_model: str = "llama-3.3-70b-versatile"
+    # ArgumentGuardAgent: PII/pattern detection → fast 8B (14,400 RPD vs 1,000 RPD for 70B)
+    argument_guard_model: str = "llama-3.1-8b-instant"
 
     # Policy
     policy_dir: str = "policies"
