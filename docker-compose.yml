@@ -25,25 +25,59 @@ services:
       timeout: 3s
       retries: 10
 
+  gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Override localhost URLs with Docker service names
+      - DATABASE_URL=postgresql+asyncpg://gateway:gateway@postgres:5432/gateway
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_ENABLED=true
+      - OTEL_ENDPOINT=http://otel-collector:4317
+      # No staging.yaml exists → loader falls back to default.yaml (has all env rules)
+      - ENVIRONMENT=staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./ui
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+        VITE_ADMIN_KEY: ${ADMIN_API_KEY:-}
+    ports:
+      - "3000:80"
+    depends_on:
+      - gateway
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "55679:55679" # zpages (debug UI at http://localhost:55679/debug/tracez)
+      - "4317:4317"   # OTLP gRPC receiver
+      - "55679:55679" # zpages debug UI
     volumes:
-      - ./docker/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
 
-  # Placeholder — Phase 4 will add the actual gateway image + Dockerfile
-  # gateway:
-  #   build: .
-  #   ports:
-  #     - "8000:8000"
-  #   env_file: .env
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_healthy
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14250:14250"  # gRPC from collector
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
 
 volumes:
   postgres_data:
+  grafana_data:
