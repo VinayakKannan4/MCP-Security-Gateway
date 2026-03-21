@@ -69,7 +69,7 @@ class EnforcementPipeline:
         self,
         settings: Settings,
         db: AsyncSession,
-        redis: Redis[str],
+        redis: Redis,
         risk_classifier: RiskClassifierAgent,
         argument_guard: ArgumentGuardAgent,
         policy_engine: PolicyEngine,
@@ -132,7 +132,12 @@ class EnforcementPipeline:
                     # Step 7 — check / issue approval token
                     pending_token = await self._check_approval(request, identity, risk)
                     if pending_token is None:
-                        # Token approved — fall through to execute
+                        # Token approved — update decision and execute
+                        decision = PolicyDecision(
+                            decision=DecisionEnum.ALLOW,
+                            matched_rule=decision.matched_rule,
+                            rationale=f"Approved: {decision.rationale}",
+                        )
                         tool_output, execution_status = await self._execute_safe(
                             request, sanitized_args
                         )

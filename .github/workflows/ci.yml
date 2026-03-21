@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - run: uv run ruff check gateway/ tests/
+      - run: uv run mypy gateway/ --strict
+
+  unit-and-scenario:
+    runs-on: ubuntu-latest
+    env:
+      LLM_PROVIDER: openai_compat
+      LLM_API_KEY: dummy-key-for-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - run: uv run python -m pytest -m "unit or scenario" -v --tb=short
+
+  integration:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - "5432:5432"
+      redis:
+        image: redis:7
+        ports:
+          - "6379:6379"
+    env:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway
+      REDIS_URL: redis://localhost:6379/0
+      LLM_PROVIDER: openai_compat
+      LLM_API_KEY: dummy-key-for-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - run: uv run alembic upgrade head
+      - run: uv run python -m pytest -m integration -v --tb=short

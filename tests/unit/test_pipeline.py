@@ -313,7 +313,7 @@ async def test_approval_required_approved_token_executes() -> None:
 
     response = await pipeline.run(req)
 
-    assert response.decision == DecisionEnum.APPROVAL_REQUIRED  # decision stays same
+    assert response.decision == DecisionEnum.ALLOW  # decision updated after approval verified
     assert response.result == {"result": "approved and executed"}
     pipeline._executor.forward.assert_called_once()
 

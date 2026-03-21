@@ -5,6 +5,8 @@ store data without an expiry. This ensures approval tokens and other
 time-sensitive data cannot accumulate indefinitely.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -17,16 +19,16 @@ from gateway.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def get_redis() -> AsyncGenerator[Redis[str], None]:
+async def get_redis() -> AsyncGenerator[Redis, None]:
     """FastAPI dependency that yields a connected async Redis client."""
-    client: Redis[str] = Redis.from_url(settings.redis_url, decode_responses=True)
+    client: Redis = Redis.from_url(settings.redis_url, decode_responses=True)
     try:
         yield client
     finally:
         await client.aclose()
 
 
-async def set_json(client: Redis[str], key: str, value: dict[str, Any], ttl: int) -> None:
+async def set_json(client: Redis, key: str, value: dict[str, Any], ttl: int) -> None:
     """Serialize value as JSON and store it with a mandatory TTL (seconds).
 
     The ttl parameter is required — never store without expiry.
@@ -37,7 +39,7 @@ async def set_json(client: Redis[str], key: str, value: dict[str, Any], ttl: int
     logger.debug("redis set key=%s ttl=%ds", key, ttl)
 
 
-async def get_json(client: Redis[str], key: str) -> dict[str, Any] | None:
+async def get_json(client: Redis, key: str) -> dict[str, Any] | None:
     """Retrieve and deserialize a JSON value. Returns None if key is missing."""
     raw = await client.get(key)
     if raw is None:
@@ -46,7 +48,7 @@ async def get_json(client: Redis[str], key: str) -> dict[str, Any] | None:
     return result
 
 
-async def delete(client: Redis[str], key: str) -> None:
+async def delete(client: Redis, key: str) -> None:
     """Delete a key from Redis."""
     await client.delete(key)
     logger.debug("redis delete key=%s", key)

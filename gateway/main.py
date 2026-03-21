@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from gateway.agents.argument_guard import ArgumentGuardAgent
@@ -18,6 +19,7 @@ from gateway.api.v1 import gateway as gateway_router_module
 from gateway.config import Settings
 from gateway.config import settings as default_settings
 from gateway.enforcement.executor import MCPExecutor
+from gateway.observability.otel import configure_otel
 from gateway.policy.engine import PolicyEngine
 from gateway.policy.loader import load_policy_for_environment
 
@@ -75,6 +77,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Store settings on app.state so lifespan + deps can access them
     app.state.settings = cfg
+
+    # CORS — allow the React UI (localhost:3000) to call the gateway API
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # OpenTelemetry (no-op when OTEL_ENABLED=false)
+    configure_otel(app, cfg)
 
     # Routers
     app.include_router(gateway_router_module.router, prefix="/v1/gateway", tags=["gateway"])
