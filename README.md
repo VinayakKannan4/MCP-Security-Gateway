@@ -4,6 +4,8 @@ A security gateway that sits between AI agents and MCP tool servers. Every tool 
 
 If you're running MCP servers (filesystem, database, cloud APIs) and letting agents call them, this gives you access control, audit logging, and human approval workflows out of the box.
 
+> **Disclaimer:** This is a personal project provided as-is, with no warranties or guarantees of any kind. It is not a certified security product and should not be relied upon as your sole line of defense. Use it at your own risk. The author is not responsible for any security incidents, data loss, or damages resulting from the use of this software. Always conduct your own security review before deploying in any environment. See [LICENSE](LICENSE) for full terms.
+
 ## How it works
 
 Every request passes through a 10-step enforcement pipeline:
