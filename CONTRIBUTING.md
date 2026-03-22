@@ -122,5 +122,5 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full details. Key rules:
 1. **PolicyEngine is AUTHORITATIVE** — LLM agents are advisory only
 2. **Never store raw tool arguments** — only SHA-256 hashes in audit logs
 3. **RedTeamAttackerAgent is test-only** — never deploy in production
-4. **No LangChain** — direct Anthropic SDK calls only
+4. **No LangChain** — direct SDK calls only (Anthropic SDK or OpenAI-compatible SDK)
 5. **Agents do not call each other** — only the pipeline orchestrates agent calls
