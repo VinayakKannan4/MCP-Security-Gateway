@@ -1,29 +1,16 @@
 import { useEffect, useState } from 'react'
-import { AuditEvent, fetchAuditEvents } from '../api/audit'
-import { ApprovalRequest, fetchApproval } from '../api/approvals'
+import { ApprovalSummary, fetchPendingApprovals } from '../api/approvals'
 import { ApprovalCard } from '../components/ApprovalCard'
 
 export function ApprovalsPage() {
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
+  const [approvals, setApprovals] = useState<ApprovalSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const load = async () => {
     try {
-      // Fetch recent audit events and filter for APPROVAL_REQUIRED ones to get tokens
-      const events: AuditEvent[] = await fetchAuditEvents(100)
-      const pending = events.filter((e) => e.decision === 'APPROVAL_REQUIRED')
-
-      // Fetch approval details for each token (request_id doubles as token ref)
-      const details = await Promise.allSettled(
-        pending.map((e) => fetchApproval(e.request_id))
-      )
-
-      const resolved: ApprovalRequest[] = details
-        .filter((r): r is PromiseFulfilledResult<ApprovalRequest> => r.status === 'fulfilled')
-        .map((r) => r.value)
-
-      setApprovals(resolved)
+      const data = await fetchPendingApprovals()
+      setApprovals(data)
       setError(null)
     } catch (err) {
       setError(String(err))

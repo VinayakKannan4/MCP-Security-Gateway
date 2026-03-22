@@ -4,9 +4,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from gateway.api.deps import get_approval_manager, require_admin
 from gateway.approval.manager import ApprovalManager
-from gateway.models.approval import ApprovalResult
+from gateway.models.approval import ApprovalResult, ApprovalStatus, ApprovalSummary
 
 router = APIRouter()
+
+
+@router.get(
+    "/", response_model=list[ApprovalSummary], dependencies=[Depends(require_admin)]
+)
+async def list_approvals(
+    status: str | None = Query(default=None, description="Filter by status: PENDING, APPROVED, DENIED, EXPIRED"),
+    limit: int = Query(default=50, le=200),
+    manager: ApprovalManager = Depends(get_approval_manager),
+) -> list[ApprovalSummary]:
+    """List approval requests, optionally filtered by status."""
+    status_filter = ApprovalStatus(status) if status else None
+    return await manager.list_requests(status_filter=status_filter, limit=limit)
 
 
 @router.get("/{token}", response_model=ApprovalResult, dependencies=[Depends(require_admin)])
