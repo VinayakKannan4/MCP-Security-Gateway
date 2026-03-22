@@ -7,7 +7,7 @@ export interface AuditEvent {
   decision: string
   matched_policy_rule: string | null
   latency_ms: number | null
-  created_at: string
+  timestamp: string
 }
 
 export async function fetchAuditEvents(limit = 50): Promise<AuditEvent[]> {

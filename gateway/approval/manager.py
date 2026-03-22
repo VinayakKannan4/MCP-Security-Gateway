@@ -24,7 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.cache.redis_client import delete, get_json, set_json
 from gateway.config import settings
 from gateway.db.models import ApprovalRequestRow
-from gateway.models.approval import ApprovalRequest, ApprovalResult, ApprovalStatus
+from gateway.models.approval import (
+    ApprovalRequest,
+    ApprovalResult,
+    ApprovalStatus,
+    ApprovalSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,34 @@ class ApprovalManager:
 
         logger.debug("approval token issued request_id=%s", request.request_id)
         return request.token
+
+    async def list_requests(
+        self, status_filter: ApprovalStatus | None = None, limit: int = 50
+    ) -> list[ApprovalSummary]:
+        """List approval requests, optionally filtered by status."""
+        stmt = select(ApprovalRequestRow).order_by(
+            ApprovalRequestRow.created_at.desc()
+        )
+        if status_filter is not None:
+            stmt = stmt.where(ApprovalRequestRow.status == status_filter.value)
+        stmt = stmt.limit(limit)
+
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+        return [
+            ApprovalSummary(
+                token=row.token,
+                caller_id=row.caller_id,
+                tool_name=row.tool_call.get("tool", "unknown"),
+                server=row.tool_call.get("server", "unknown"),
+                status=ApprovalStatus(row.status),
+                created_at=row.created_at,
+                expires_at=row.expires_at,
+                approver_id=row.approver_id,
+                decided_at=row.decision_at,
+            )
+            for row in rows
+        ]
 
     async def check_token(self, token: str) -> ApprovalResult:
         """Return the current status of an approval token.

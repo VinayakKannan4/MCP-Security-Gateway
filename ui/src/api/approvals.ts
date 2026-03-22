@@ -1,23 +1,32 @@
 import { apiClient } from './client'
 
-export interface ApprovalRequest {
+export interface ApprovalSummary {
   token: string
   caller_id: string
   tool_name: string
-  status: 'pending' | 'approved' | 'denied' | 'expired'
+  server: string
+  status: 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED'
   created_at: string
-  expires_at: string | null
+  expires_at: string
+  approver_id: string | null
+  decided_at: string | null
 }
 
-export async function fetchApproval(token: string): Promise<ApprovalRequest> {
-  const response = await apiClient.get<ApprovalRequest>(`/v1/approvals/${token}`)
+export async function fetchPendingApprovals(): Promise<ApprovalSummary[]> {
+  const response = await apiClient.get<ApprovalSummary[]>('/v1/approvals/', {
+    params: { status: 'PENDING' },
+  })
   return response.data
 }
 
 export async function approveRequest(token: string): Promise<void> {
-  await apiClient.post(`/v1/approvals/${token}/approve`)
+  await apiClient.post(`/v1/approvals/${token}/approve`, null, {
+    params: { approver_id: 'dashboard-admin', note: 'Approved via dashboard' },
+  })
 }
 
 export async function denyRequest(token: string): Promise<void> {
-  await apiClient.post(`/v1/approvals/${token}/deny`)
+  await apiClient.post(`/v1/approvals/${token}/deny`, null, {
+    params: { approver_id: 'dashboard-admin', note: 'Denied via dashboard' },
+  })
 }

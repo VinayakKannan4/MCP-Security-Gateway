@@ -34,3 +34,17 @@ class ApprovalResult(BaseModel):
     approver_id: str | None = None
     note: str | None = None
     decided_at: datetime | None = None
+
+
+class ApprovalSummary(BaseModel):
+    """Richer view of an approval request for dashboard listing."""
+
+    token: str
+    caller_id: str
+    tool_name: str
+    server: str
+    status: ApprovalStatus
+    created_at: datetime
+    expires_at: datetime
+    approver_id: str | None = None
+    decided_at: datetime | None = None

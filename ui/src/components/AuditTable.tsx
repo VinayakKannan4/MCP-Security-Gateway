@@ -48,8 +48,8 @@ export function AuditTable({ events, loading }: AuditTableProps) {
         <tbody>
           {events.map((evt) => (
             <tr key={evt.request_id} style={{ background: '#0f172a' }}>
-              <td style={cellStyle} title={evt.created_at}>
-                {new Date(evt.created_at).toLocaleTimeString()}
+              <td style={cellStyle} title={evt.timestamp}>
+                {new Date(evt.timestamp).toLocaleTimeString()}
               </td>
               <td style={cellStyle} title={evt.caller_id}>
                 {evt.caller_id}
