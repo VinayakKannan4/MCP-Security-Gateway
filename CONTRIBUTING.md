@@ -10,23 +10,21 @@
 ## Setup
 
 ```bash
-git clone https://github.com/your-org/MCP-Security-Gateway.git
+git clone https://github.com/VinayakKannan4/MCP-Security-Gateway.git
 cd MCP-Security-Gateway
 
 # Install dependencies
 uv sync
 
-# Start infrastructure (postgres, redis, otel)
-docker compose up postgres redis otel-collector -d
+# Start infrastructure
+docker compose up -d
 
-# Run database migrations
+# Run database migrations and seed data
 uv run alembic upgrade head
-
-# Seed example policies
 uv run python scripts/seed_policies.py
 
 # Verify everything works
-uv run pytest -m unit
+uv run python -m pytest -m unit
 ```
 
 ## Development Workflow
@@ -34,10 +32,10 @@ uv run pytest -m unit
 ### Running Tests
 
 ```bash
-uv run pytest -m unit                    # Fast, no external deps (~5s)
-uv run pytest -m integration            # Requires Docker stack (~30s)
-uv run pytest -m scenario               # Security benchmark scenarios
-uv run pytest --cov=gateway             # With coverage report
+uv run python -m pytest -m unit                    # Fast, no external deps (~5s)
+uv run python -m pytest -m integration            # Requires Docker stack (~30s)
+uv run python -m pytest -m scenario               # Security benchmark scenarios
+uv run python -m pytest --cov=gateway             # With coverage report
 ```
 
 ### Code Quality
@@ -106,7 +104,7 @@ Types: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`, `perf`, `ci`
 - [ ] Export from `gateway/agents/__init__.py`
 - [ ] Wire into `gateway/enforcement/pipeline.py` at the appropriate step
 - [ ] Add unit tests with mocked LLM responses in `tests/unit/test_<name>.py`
-- [ ] Update `CLAUDE.md` Key File Map
+- [ ] Update project documentation as needed
 
 ## Checklist: Adding a New Policy Constraint Type
 

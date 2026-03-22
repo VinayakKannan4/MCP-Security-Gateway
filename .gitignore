@@ -207,3 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 .env
+
+# Claude Code project instructions (contains local paths)
+CLAUDE.md

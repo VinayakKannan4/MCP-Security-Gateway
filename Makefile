@@ -1,4 +1,4 @@
-UV := /Users/vinayakkannan/.local/bin/uv
+UV := uv
 
 .PHONY: install test test-unit test-scenario test-integration lint fmt typecheck up down migrate seed benchmark
 
