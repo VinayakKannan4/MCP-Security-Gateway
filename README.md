@@ -83,47 +83,55 @@ The initial release covers three tool types:
 - Docker + Docker Compose
 - A [Groq API key](https://console.groq.com) (free tier) — or run [Ollama](https://ollama.com) locally
 
-### Install
+### 1. Install and configure
 
 ```bash
-git clone https://github.com/your-org/MCP-Security-Gateway.git
+git clone https://github.com/VinayakKannan4/MCP-Security-Gateway.git
 cd MCP-Security-Gateway
 
 # Install dependencies
 uv sync
 
-# Configure LLM provider (Groq recommended — free tier)
+# Configure environment
 cp .env.example .env
-# Edit .env and set LLM_API_KEY=gsk_...
+# Edit .env and set:
+#   LLM_API_KEY=gsk_...       (Groq key from https://console.groq.com)
+#   ADMIN_API_KEY=<something>  (used for approval/audit admin endpoints)
 
-# Start infrastructure
-docker compose up postgres redis -d
-
-# Run database migrations
-uv run alembic upgrade head
-
-# Verify everything works
+# Run unit tests (no Docker needed)
 uv run python -m pytest -m unit
 ```
 
-### Run the full stack
+### 2. Start the full stack
 
 ```bash
-docker compose up
-# Gateway API:  http://localhost:8000
-# API docs:     http://localhost:8000/docs
-# Dashboard UI: http://localhost:3000
+docker compose up -d
+
+# Wait for all services to be healthy, then seed the database:
+uv run alembic upgrade head
+uv run python scripts/seed_policies.py
 ```
 
-### Send a request
+The seed script prints two API keys to stdout — save them, they cannot be recovered later.
+
+### 3. Access the services
+
+| Service | URL |
+|---------|-----|
+| Gateway API | http://localhost:8000 |
+| API docs (Swagger) | http://localhost:8000/docs |
+| Dashboard UI | http://localhost:3000 |
+| Jaeger traces | http://localhost:16686 |
+| Grafana | http://localhost:3001 (admin/admin) |
+
+### 4. Send a test request
 
 ```bash
 curl -X POST http://localhost:8000/v1/gateway/invoke \
-  -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "caller_id": "my-agent",
-    "api_key": "your-api-key",
+    "caller_id": "dev-agent",
+    "api_key": "<your-api-key-from-seed-script>",
     "environment": "dev",
     "tool_call": {
       "server": "filesystem-mcp",
@@ -132,6 +140,14 @@ curl -X POST http://localhost:8000/v1/gateway/invoke \
     }
   }'
 ```
+
+### 5. Run the security benchmark
+
+```bash
+uv run python scripts/run_benchmark.py
+```
+
+This sends 10 scenarios (6 attacks + 4 safe requests) and verifies correct ALLOW/DENY decisions.
 
 ---
 
@@ -211,7 +227,8 @@ Raw arguments are never stored — only their SHA-256 hash.
 The gateway ships with a benchmark suite of 10 scenarios — 6 attacks that must be blocked, 4 safe workflows that must be allowed:
 
 ```bash
-uv run python scripts/run_benchmark.py
+make benchmark
+# or: uv run python scripts/run_benchmark.py
 ```
 
 | Scenario | Expected | Type |
@@ -238,17 +255,17 @@ uv run python scripts/run_benchmark.py
 | **3 — LLM Agents** | ✅ Complete | BaseAgent, RiskClassifierAgent (Groq 70B), ArgumentGuardAgent (Groq 8B) — 153 tests |
 | **4 — API + Pipeline** | ✅ Complete | FastAPI app, full 10-step enforcement pipeline, MCPExecutor — 180 unit tests |
 | **5 — Benchmark** | ✅ Complete | 10-scenario security benchmark, RedTeamAttackerAgent, scenario test suite — 195 tests |
-| **6 — UI + Infra** | 🔲 Next | React dashboard, full Docker Compose stack, GitHub Actions CI/CD |
+| **6 — UI + Infra** | ✅ Complete | React dashboard, Docker Compose (7 services), OpenTelemetry + Jaeger, CI/CD — 198 tests |
 
 ---
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — System design, diagrams, threat model
+- [ARCHITECTURE.md](ARCHITECTURE.md) — System design, three-layer enforcement model, threat model
 - [SECURITY.md](SECURITY.md) — Security properties, known limitations, disclosure policy
 - [CONTRIBUTING.md](CONTRIBUTING.md) — Dev setup, checklists for adding tools and agents
 - [docs/policies/policy-schema.md](docs/policies/policy-schema.md) — Full policy YAML reference
-- [docs/architecture/agent-interaction.md](docs/architecture/agent-interaction.md) — Sequence diagrams
+- [docs/architecture/agent-interaction.md](docs/architecture/agent-interaction.md) — Mermaid sequence diagrams for all flows
 
 ---
 
