@@ -59,14 +59,13 @@ The critical design choice is that **LLMs are advisory, not authoritative**.
 │  • Prompt injection detection                            │
 │  • Semantic risk classification                          │
 │  • Suspicious intent detection                           │
-│  • Policy decision explanation                           │
 │  • Output: RiskAssessment (labels + score) → audit only  │
 └──────────────────────────────────────────────────────────┘
          ▲
          │ escalates to
 ┌──────────────────────────────────────────────────────────┐
 │  Layer 3: Human Approval Workflow                        │
-│  • Triggered for: HIGH_WRITE_ACTION, HIGH_DESTRUCTIVE    │
+│  • Triggered by policy rules with decision: APPROVAL_REQUIRED │
 │  • Token-based: cryptographically random, Redis TTL      │
 │  • Single-use approval tokens                            │
 │  • All approvals logged with approver identity           │
@@ -81,12 +80,11 @@ The critical design choice is that **LLMs are advisory, not authoritative**.
 
 | Agent | Makes LLM calls? | Input | Output | Can override policy? |
 |-------|-----------------|-------|--------|---------------------|
-| `CoordinatorAgent` | No | MCPRequest + pipeline state | Routing decisions | N/A |
 | `RiskClassifierAgent` | Yes (if heuristics insufficient) | Tool name + sanitized args preview | `RiskAssessment` | No |
-| `PolicyReasonerAgent` | Yes | `PolicyDecision` + context | Human-readable explanation | No |
 | `ArgumentGuardAgent` | Yes (if deterministic phase ambiguous) | Tool arguments | Sanitized args + `RedactionFlag[]` | No |
-| `AuditSummarizerAgent` | Yes | `AuditEvent` | Narrative prose | No |
 | `RedTeamAttackerAgent` | Yes | Scenario type | Adversarial `MCPRequest[]` | N/A (test only) |
+
+Pipeline orchestration is handled directly by `EnforcementPipeline` in `gateway/enforcement/pipeline.py` — there is no separate coordinator agent.
 
 ---
 
@@ -130,11 +128,12 @@ If decision is not DENY:
 If decision is `APPROVAL_REQUIRED`:
 1. `ApprovalManager.issue_token()` creates a cryptographically random token
 2. Token stored in Redis with TTL + Postgres for durability
-3. Notifier triggered (webhook/Slack stub)
-4. Gateway returns `APPROVAL_REQUIRED` response immediately
-5. Calling agent polls `GET /v1/approvals/{token}` until status changes
-6. Human reviews in dashboard, approves or denies
-7. On re-submission with approved token, pipeline proceeds to step 8
+3. Gateway returns `APPROVAL_REQUIRED` response with the token immediately
+4. Calling agent polls `GET /v1/approvals/{token}` until status changes
+5. Human reviews in dashboard, approves or denies via `POST /v1/approvals/{token}/approve`
+6. On re-submission with approved token in request body, pipeline proceeds to step 8
+
+Note: A notifier stub exists (`gateway/approval/notifier.py`) but is not wired into the pipeline yet.
 
 ### Step 8: Execute
 If decision is ALLOW or SANITIZE_AND_ALLOW:
@@ -153,11 +152,11 @@ If decision is ALLOW or SANITIZE_AND_ALLOW:
 | Layer | Sees | Does NOT see |
 |-------|------|-------------|
 | Schema Validator | Raw args | Caller identity, policy rules |
-| Risk Classifier (LLM) | Tool name, sanitized args preview, context | Caller ID, API key, policy rule names |
+| Risk Classifier (LLM) | Tool name, raw arguments, context | Caller ID, API key, policy rule names |
 | Policy Engine | Full request, caller identity, policy config | LLM reasoning |
 | Argument Guard (LLM) | Tool arguments | Caller identity, policy decisions |
 | Audit Logger | Everything (hashed where sensitive) | Nothing hidden — this is the complete record |
-| Response to Caller | Decision, result (if allowed), explanation | Internal rule names, other callers' data |
+| Response to Caller | Decision, result (if allowed), policy explanation (includes matched rule name), risk labels | Other callers' data, raw args |
 
 ---
 
@@ -177,9 +176,11 @@ for rule in sorted(policy.rules, key=lambda r: -r.priority):
             # Constraint failed for this rule → continue to next rule
             continue
 
-# No rule matched
+# No rule matched (and no catch-all rule in YAML)
 return PolicyDecision(decision=DENY, matched_rule="catch-all-deny")
 ```
+
+In practice, the default policy YAML includes a `deny-all-default` rule at priority 0 that matches all tools/roles/environments, so requests typically hit that rule before reaching the hardcoded catch-all. The `"catch-all-deny"` string only appears if the YAML has no fallback rule at all.
 
 `global_deny` is checked before this loop and produces an immediate hard DENY.
 
