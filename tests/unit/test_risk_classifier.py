@@ -13,7 +13,6 @@ from gateway.config import Settings
 from gateway.models.mcp import ToolCall
 from gateway.models.risk import RiskLabel
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

@@ -5,10 +5,10 @@ All functions are pure (no I/O, no LLM calls, no side effects).
 Each returns (passed: bool, reason: str).
 """
 
+import ipaddress
 import posixpath
 import re
 from urllib.parse import urlparse
-import ipaddress
 
 from gateway.models.policy import (
     ArgumentConstraintConfig,

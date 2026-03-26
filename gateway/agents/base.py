@@ -65,10 +65,13 @@ class BaseAgent(ABC):
                 )
                 logger.debug("LLM response | attempt=%d text=%.200r", attempt, text)
                 return text
-            except (AnthropicAPIError, OpenAIAPIError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, AnthropicAPIError, OpenAIAPIError) as exc:
                 last_exc = exc
                 if attempt < self._max_retries:
-                    logger.debug("LLM attempt %d/%d failed: %s", attempt + 1, self._max_retries, exc)
+                    logger.debug(
+                        "LLM attempt %d/%d failed: %s",
+                        attempt + 1, self._max_retries, exc,
+                    )
 
         raise last_exc
 

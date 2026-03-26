@@ -1,18 +1,17 @@
 import asyncio
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
+import gateway.db.models  # noqa: F401 — registers ORM models on Base.metadata
+from gateway.config import settings
 
 # Import Base so Alembic can see all ORM models via their metadata.
 # Side-effect: importing models.py registers all tables on Base.metadata.
 from gateway.db.session import Base
-import gateway.db.models  # noqa: F401 — registers ORM models on Base.metadata
-
-from gateway.config import settings
 
 config = context.config
 

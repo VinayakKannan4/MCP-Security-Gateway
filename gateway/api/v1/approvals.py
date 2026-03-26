@@ -13,7 +13,10 @@ router = APIRouter()
     "/", response_model=list[ApprovalSummary], dependencies=[Depends(require_admin)]
 )
 async def list_approvals(
-    status: str | None = Query(default=None, description="Filter by status: PENDING, APPROVED, DENIED, EXPIRED"),
+    status: str | None = Query(
+        default=None,
+        description="Filter by status: PENDING, APPROVED, DENIED, EXPIRED",
+    ),
     limit: int = Query(default=50, le=200),
     manager: ApprovalManager = Depends(get_approval_manager),
 ) -> list[ApprovalSummary]:

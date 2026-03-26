@@ -1,8 +1,9 @@
-from enum import Enum
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
 
 
-class RiskLabel(str, Enum):
+class RiskLabel(StrEnum):
     LOW_READONLY = "LOW_READONLY"
     MEDIUM_DATA_EXFIL = "MEDIUM_DATA_EXFIL"
     HIGH_WRITE_ACTION = "HIGH_WRITE_ACTION"

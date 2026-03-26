@@ -28,7 +28,7 @@ from gateway.config import Settings
 from gateway.db.models import ApiKey
 from gateway.enforcement.pipeline import EnforcementPipeline
 from gateway.models.approval import ApprovalStatus
-from gateway.models.identity import CallerIdentity, TrustLevel
+from gateway.models.identity import TrustLevel
 from gateway.models.mcp import MCPRequest, ToolCall
 from gateway.models.policy import DecisionEnum, PolicyDecision
 from gateway.models.risk import RiskAssessment

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -29,10 +29,9 @@ from gateway.enforcement.pipeline import EnforcementPipeline
 from gateway.models.approval import ApprovalResult, ApprovalStatus
 from gateway.models.audit import RedactionFlag
 from gateway.models.identity import CallerIdentity, TrustLevel
-from gateway.models.mcp import GatewayResponse, MCPRequest, ToolCall
+from gateway.models.mcp import MCPRequest, ToolCall
 from gateway.models.policy import DecisionEnum, PolicyDecision
 from gateway.models.risk import RiskAssessment, RiskLabel
-
 
 # ---------------------------------------------------------------------------
 # Helpers & fixtures
