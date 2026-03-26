@@ -78,24 +78,24 @@ class BaseAgent(ABC):
     async def _invoke(self, system: str, prompt: str) -> str:
         """Single provider-specific API call, no retry logic."""
         if self._anthropic_client is not None:
-            response = await self._anthropic_client.messages.create(
+            anthropic_response = await self._anthropic_client.messages.create(
                 model=self._model,
                 max_tokens=1024,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
-            block = response.content[0]
+            block = anthropic_response.content[0]
             return block.text if isinstance(block, TextBlock) else ""
         else:
             assert self._openai_client is not None
-            response = await self._openai_client.chat.completions.create(
+            openai_response = await self._openai_client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
                 ],
             )
-            return response.choices[0].message.content or ""
+            return openai_response.choices[0].message.content or ""
 
     @staticmethod
     def _extract_tag(raw: str, tag: str) -> str | None:

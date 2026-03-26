@@ -25,7 +25,7 @@ async def get_redis() -> AsyncGenerator[Redis, None]:
     try:
         yield client
     finally:
-        await client.aclose()
+        await client.close()
 
 
 async def set_json(client: Redis, key: str, value: dict[str, Any], ttl: int) -> None:

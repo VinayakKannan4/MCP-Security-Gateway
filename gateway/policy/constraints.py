@@ -8,10 +8,12 @@ Each returns (passed: bool, reason: str).
 import ipaddress
 import posixpath
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from gateway.models.policy import (
     ArgumentConstraintConfig,
+    GlobalDenyArgumentPattern,
     PathConstraintConfig,
     SqlConstraintConfig,
     UrlConstraintConfig,
@@ -107,7 +109,7 @@ def check_url_safety(url: str, config: UrlConstraintConfig) -> tuple[bool, str]:
 
 
 def check_argument_patterns(
-    arguments: dict,
+    arguments: dict[str, Any],
     config: ArgumentConstraintConfig,
 ) -> tuple[bool, str]:
     """Check tool arguments against denied regex patterns."""
@@ -141,8 +143,8 @@ def check_argument_patterns(
 
 
 def check_global_deny_patterns(
-    arguments: dict,
-    patterns: list,  # list[GlobalDenyArgumentPattern]
+    arguments: dict[str, Any],
+    patterns: list[GlobalDenyArgumentPattern],
 ) -> tuple[bool, str]:
     """Check arguments against global deny argument patterns."""
     string_fields = _extract_string_fields(arguments)

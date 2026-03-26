@@ -162,7 +162,7 @@ class PolicyEngine:
         self,
         constraints: ConstraintConfig,
         tool: str,
-        arguments: dict,
+        arguments: dict[str, object],
     ) -> list[tuple[bool, str, str]]:
         """
         Run all configured constraint checkers.

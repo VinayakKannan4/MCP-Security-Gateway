@@ -54,7 +54,7 @@ into (e.g. path, query, content)</attack_arg_field>
         raw = await self._call(self.SYSTEM_PROMPT, prompt)
         return self.parse_response(raw, tool=tool, server=server)
 
-    def parse_response(self, raw: str, tool: str = "", server: str = "") -> AttackScenario:  # type: ignore[override]
+    def parse_response(self, raw: str, tool: str = "", server: str = "") -> AttackScenario:
         """Extract AttackScenario from XML-tagged LLM response."""
         name = self._extract_tag(raw, "attack_name") or "unnamed_attack"
         attack_type = self._extract_tag(raw, "attack_type") or "UNKNOWN"

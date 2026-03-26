@@ -72,7 +72,7 @@ def _validate_property(
         "object": dict,
     }
     expected_type = type_map.get(schema.type)
-    if expected_type and not isinstance(value, expected_type):
+    if expected_type and not isinstance(value, expected_type):  # type: ignore[arg-type]
         violations.append(
             f"Field '{field_name}' expected type '{schema.type}', "
             f"got {type(value).__name__}"
