@@ -15,8 +15,6 @@ import logging
 import re
 from typing import ClassVar
 
-from pydantic import BaseModel
-
 from gateway.agents.base import BaseAgent
 from gateway.config import Settings
 from gateway.models.mcp import ToolCall
@@ -82,7 +80,8 @@ _HEURISTIC_SKIP_THRESHOLD = 0.8  # skip LLM when heuristic score reaches this
 
 
 class RiskClassifierAgent(BaseAgent):
-    SYSTEM_PROMPT: ClassVar[str] = """You are a security risk classifier for an MCP (Model Context Protocol) gateway.
+    SYSTEM_PROMPT: ClassVar[str] = """You are a security risk classifier \
+for an MCP (Model Context Protocol) gateway.
 Your task is to analyze tool call arguments and assess their security risk level.
 
 Classify using zero or more of these labels (comma-separated, or NONE if safe):
@@ -178,7 +177,8 @@ Rules:
         if context:
             parts.append(f"Session context: {context}")
         if heuristic_result.triggered_heuristics:
-            parts.append(f"Pre-flagged heuristics: {', '.join(heuristic_result.triggered_heuristics)}")
+            flagged = ", ".join(heuristic_result.triggered_heuristics)
+            parts.append(f"Pre-flagged heuristics: {flagged}")
         return "\n".join(parts)
 
     def parse_response(self, raw: str) -> RiskAssessment:

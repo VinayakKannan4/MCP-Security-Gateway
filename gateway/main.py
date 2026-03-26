@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # --- Shutdown ---
     await app.state.executor.aclose()
-    await redis_client.aclose()
+    await redis_client.close()
     await engine.dispose()
 
     logger.info("MCP Security Gateway shut down")

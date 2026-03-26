@@ -2,8 +2,9 @@
 Shared test fixtures.
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from gateway.models.identity import CallerIdentity, TrustLevel
 from gateway.models.policy import PolicyConfig

@@ -19,7 +19,7 @@ _SAMPLE_LLM_RESPONSE = """\
 <attack_type>PATH_TRAVERSAL</attack_type>
 <attack_arg_field>path</attack_arg_field>
 <attack_arg_value>/data/../../../../etc/passwd</attack_arg_value>
-<description>Attempts to escape the allowed path prefix via repeated traversal sequences.</description>
+<description>Attempts to escape the allowed path prefix.</description>
 """
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def test_parse_response_well_formed(agent: RedTeamAttackerAgent) -> None:
     assert result.name == "path_traversal_etc_passwd"
     assert result.attack_type == "PATH_TRAVERSAL"
     assert result.description == (
-        "Attempts to escape the allowed path prefix via repeated traversal sequences."
+        "Attempts to escape the allowed path prefix."
     )
     assert result.tool_call.tool == "fs.read"
     assert result.tool_call.server == "filesystem-mcp"

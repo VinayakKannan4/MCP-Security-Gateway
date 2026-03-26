@@ -9,9 +9,8 @@ but it CANNOT override a DENY decision from this engine.
 """
 
 import fnmatch
-import re
 
-from gateway.models.identity import CallerIdentity, TrustLevel
+from gateway.models.identity import CallerIdentity
 from gateway.models.mcp import MCPRequest
 from gateway.models.policy import (
     ConstraintConfig,
@@ -114,7 +113,10 @@ class PolicyEngine:
             return PolicyDecision(
                 decision=rule.decision,
                 matched_rule=rule.name,
-                rationale=f"Matched rule '{rule.name}' (priority={rule.priority}): {rule.description}",
+                rationale=(
+                    f"Matched rule '{rule.name}' "
+                    f"(priority={rule.priority}): {rule.description}"
+                ),
                 requires_approval=rule.decision == DecisionEnum.APPROVAL_REQUIRED,
                 constraints_applied=constraints_applied,
             )
@@ -123,7 +125,10 @@ class PolicyEngine:
         return PolicyDecision(
             decision=DecisionEnum.DENY,
             matched_rule="catch-all-deny",
-            rationale=f"No policy rule matched tool='{tool}' role='{identity.role}' env='{identity.environment}'",
+            rationale=(
+                f"No policy rule matched tool='{tool}' "
+                f"role='{identity.role}' env='{identity.environment}'"
+            ),
         )
 
     def _rule_matches(
@@ -157,7 +162,7 @@ class PolicyEngine:
         self,
         constraints: ConstraintConfig,
         tool: str,
-        arguments: dict,
+        arguments: dict[str, object],
     ) -> list[tuple[bool, str, str]]:
         """
         Run all configured constraint checkers.

@@ -13,7 +13,6 @@ from gateway.agents.base import BaseAgent
 from gateway.config import Settings
 from gateway.models.risk import RiskAssessment
 
-
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass for testing the abstract BaseAgent
 # ---------------------------------------------------------------------------
@@ -105,7 +104,7 @@ async def test_call_retries_on_timeout_then_succeeds(agent: _ConcreteAgent) -> N
 
     agent._openai_client = MagicMock()  # type: ignore[assignment]
     agent._openai_client.chat.completions.create = AsyncMock(  # type: ignore[union-attr]
-        side_effect=[asyncio.TimeoutError(), mock_resp]
+        side_effect=[TimeoutError(), mock_resp]
     )
 
     result = await agent._call("system", "prompt")
@@ -118,7 +117,7 @@ async def test_call_retries_on_timeout_then_succeeds(agent: _ConcreteAgent) -> N
 async def test_call_raises_after_exhausting_retries(agent: _ConcreteAgent) -> None:
     agent._openai_client = MagicMock()  # type: ignore[assignment]
     agent._openai_client.chat.completions.create = AsyncMock(  # type: ignore[union-attr]
-        side_effect=asyncio.TimeoutError()
+        side_effect=TimeoutError()
     )
 
     with pytest.raises(asyncio.TimeoutError):

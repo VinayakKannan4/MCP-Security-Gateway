@@ -4,7 +4,7 @@ All tests use mocked AsyncSession — no real DB required.
 """
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -12,7 +12,6 @@ from gateway.audit.logger import AuditLogger
 from gateway.audit.query import AuditQuery, _row_to_event
 from gateway.db.models import AuditEventRow
 from gateway.models.audit import AuditEvent, RedactionFlag
-
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures

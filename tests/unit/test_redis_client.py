@@ -3,8 +3,8 @@
 Uses fakeredis so no real Redis server is needed.
 """
 
-import pytest
 import fakeredis.aioredis
+import pytest
 
 from gateway.cache.redis_client import delete, get_json, set_json
 

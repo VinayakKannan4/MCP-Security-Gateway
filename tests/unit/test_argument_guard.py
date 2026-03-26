@@ -13,7 +13,6 @@ from gateway.agents.argument_guard import ArgumentGuardAgent
 from gateway.config import Settings
 from gateway.models.mcp import ToolCall
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -188,7 +187,10 @@ async def test_original_hash_is_sha256_of_original_value(agent: ArgumentGuardAge
 
 @pytest.mark.unit
 def test_parse_llm_flags_valid_json(agent: ArgumentGuardAgent) -> None:
-    raw = '<redaction_flags>[{"field": "pw", "reason": "SECRET_TOKEN", "original_hash": "abc123"}]</redaction_flags>'
+    raw = (
+        '<redaction_flags>[{"field": "pw", "reason": "SECRET_TOKEN",'
+        ' "original_hash": "abc123"}]</redaction_flags>'
+    )
     flags = agent._parse_llm_flags(raw)
     assert len(flags) == 1
     assert flags[0]["field"] == "pw"

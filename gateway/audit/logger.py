@@ -64,4 +64,4 @@ class AuditLogger:
             try:
                 await self._session.rollback()
             except Exception:
-                pass
+                logger.debug("Rollback after audit write failure also failed")

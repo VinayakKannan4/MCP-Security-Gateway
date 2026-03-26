@@ -18,7 +18,6 @@ from gateway.db.models import ApprovalRequestRow
 from gateway.models.approval import ApprovalRequest, ApprovalResult, ApprovalStatus
 from gateway.models.mcp import ToolCall
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -82,14 +81,20 @@ def mock_session() -> MagicMock:
 
 
 @pytest.mark.unit
-async def test_issue_token_returns_token(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_issue_token_returns_token(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     token = await ApprovalManager(mock_session, redis).issue_token(request)
     assert token == request.token
 
 
 @pytest.mark.unit
-async def test_issue_token_stores_in_redis(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_issue_token_stores_in_redis(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     token = await ApprovalManager(mock_session, redis).issue_token(request)
 
@@ -101,7 +106,10 @@ async def test_issue_token_stores_in_redis(mock_session: MagicMock, redis: faker
 
 
 @pytest.mark.unit
-async def test_issue_token_sets_redis_ttl(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_issue_token_sets_redis_ttl(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     token = await ApprovalManager(mock_session, redis).issue_token(request)
 
@@ -110,7 +118,10 @@ async def test_issue_token_sets_redis_ttl(mock_session: MagicMock, redis: fakere
 
 
 @pytest.mark.unit
-async def test_issue_token_stores_in_postgres(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_issue_token_stores_in_postgres(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     await ApprovalManager(mock_session, redis).issue_token(request)
 
@@ -123,14 +134,20 @@ async def test_issue_token_stores_in_postgres(mock_session: MagicMock, redis: fa
 
 
 @pytest.mark.unit
-async def test_issue_token_commits_to_postgres(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_issue_token_commits_to_postgres(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     await ApprovalManager(mock_session, redis).issue_token(request)
     mock_session.commit.assert_awaited_once()
 
 
 @pytest.mark.unit
-async def test_issue_token_serializes_tool_call_as_dict(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_issue_token_serializes_tool_call_as_dict(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     await ApprovalManager(mock_session, redis).issue_token(request)
 
@@ -146,7 +163,10 @@ async def test_issue_token_serializes_tool_call_as_dict(mock_session: MagicMock,
 
 
 @pytest.mark.unit
-async def test_check_token_redis_fast_path(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_check_token_redis_fast_path(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     """check_token should return from Redis without hitting Postgres."""
     request = make_approval_request()
     await ApprovalManager(mock_session, redis).issue_token(request)
@@ -167,7 +187,10 @@ async def test_check_token_redis_fast_path(mock_session: MagicMock, redis: faker
 
 
 @pytest.mark.unit
-async def test_check_token_postgres_fallback_when_redis_miss(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_check_token_postgres_fallback_when_redis_miss(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     """check_token falls back to Postgres when key is not in Redis."""
     request = make_approval_request()
     row = make_approval_request_row(request)
@@ -184,7 +207,10 @@ async def test_check_token_postgres_fallback_when_redis_miss(mock_session: Magic
 
 
 @pytest.mark.unit
-async def test_check_token_raises_for_unknown_token(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_check_token_raises_for_unknown_token(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_session.execute = AsyncMock(return_value=mock_result)
@@ -199,7 +225,10 @@ async def test_check_token_raises_for_unknown_token(mock_session: MagicMock, red
 
 
 @pytest.mark.unit
-async def test_approve_returns_approved_result(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_approve_returns_approved_result(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     row = make_approval_request_row(request, status="PENDING")
 
@@ -219,7 +248,10 @@ async def test_approve_returns_approved_result(mock_session: MagicMock, redis: f
 
 
 @pytest.mark.unit
-async def test_approve_commits_postgres(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_approve_commits_postgres(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     row = make_approval_request_row(request)
 
@@ -233,7 +265,10 @@ async def test_approve_commits_postgres(mock_session: MagicMock, redis: fakeredi
 
 
 @pytest.mark.unit
-async def test_approve_invalidates_redis_cache(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_approve_invalidates_redis_cache(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     """After approve, the Redis key should be deleted so Postgres is authoritative."""
     request = make_approval_request()
     # Pre-store token in Redis
@@ -252,7 +287,10 @@ async def test_approve_invalidates_redis_cache(mock_session: MagicMock, redis: f
 
 
 @pytest.mark.unit
-async def test_approve_already_decided_raises(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_approve_already_decided_raises(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     row = make_approval_request_row(request, status="APPROVED")  # already decided
 
@@ -265,7 +303,10 @@ async def test_approve_already_decided_raises(mock_session: MagicMock, redis: fa
 
 
 @pytest.mark.unit
-async def test_approve_unknown_token_raises(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_approve_unknown_token_raises(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_session.execute = AsyncMock(return_value=mock_result)
@@ -280,7 +321,10 @@ async def test_approve_unknown_token_raises(mock_session: MagicMock, redis: fake
 
 
 @pytest.mark.unit
-async def test_deny_returns_denied_result(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_deny_returns_denied_result(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     row = make_approval_request_row(request, status="PENDING")
 
@@ -298,7 +342,10 @@ async def test_deny_returns_denied_result(mock_session: MagicMock, redis: fakere
 
 
 @pytest.mark.unit
-async def test_deny_invalidates_redis_cache(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_deny_invalidates_redis_cache(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     await ApprovalManager(mock_session, redis).issue_token(request)
 
@@ -313,7 +360,10 @@ async def test_deny_invalidates_redis_cache(mock_session: MagicMock, redis: fake
 
 
 @pytest.mark.unit
-async def test_deny_already_denied_raises(mock_session: MagicMock, redis: fakeredis.aioredis.FakeRedis) -> None:
+async def test_deny_already_denied_raises(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
     request = make_approval_request()
     row = make_approval_request_row(request, status="DENIED")
 
