@@ -15,7 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.approval.manager import ApprovalManager
 from gateway.audit.logger import AuditLogger
 from gateway.audit.query import AuditQuery
+from gateway.auth.admin_sessions import AdminSessionManager
+from gateway.auth.api_keys import ApiKeyAuthenticator
 from gateway.enforcement.pipeline import EnforcementPipeline
+from gateway.models.identity import CallerIdentity
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -43,6 +46,7 @@ async def get_pipeline(
         risk_classifier=request.app.state.risk_classifier,
         argument_guard=request.app.state.argument_guard,
         policy_engine=request.app.state.policy_engine,
+        output_policy_engine=request.app.state.output_policy_engine,
         audit_logger=AuditLogger(db),
         approval_manager=ApprovalManager(session=db, redis=redis),
         executor=request.app.state.executor,
@@ -64,10 +68,30 @@ async def get_audit_query(
     return AuditQuery(session=db)
 
 
-async def require_admin(
+async def get_api_key_authenticator(
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyAuthenticator:
+    return ApiKeyAuthenticator(session=db)
+
+
+async def get_admin_session_manager(
     request: Request,
-    x_admin_key: str = Header(...),
-) -> None:
-    """Require a valid X-Admin-Key header for admin-gated endpoints."""
-    if x_admin_key != request.app.state.settings.admin_api_key:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
+    redis: Redis = Depends(get_redis),
+    authenticator: ApiKeyAuthenticator = Depends(get_api_key_authenticator),
+) -> AdminSessionManager:
+    return AdminSessionManager(
+        settings=request.app.state.settings,
+        redis=redis,
+        authenticator=authenticator,
+    )
+
+
+async def require_admin(
+    authorization: str = Header(...),
+    manager: AdminSessionManager = Depends(get_admin_session_manager),
+) -> CallerIdentity:
+    """Require a valid Bearer admin session and return the admin identity."""
+    scheme, _, token = authorization.partition(" ")
+    if scheme != "Bearer" or not token:
+        raise HTTPException(status_code=401, detail="Bearer admin session required")
+    return await manager.get_identity(token)

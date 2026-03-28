@@ -31,6 +31,10 @@ roles:                  # Optional. Role definitions with trust levels.
 rules:                  # Required. List of policy rules.
   - name: string
     ...
+
+output_rules:           # Optional. Deterministic post-execution output / egress rules.
+  - name: string
+    ...
 ```
 
 ---
@@ -157,6 +161,45 @@ rules:
 
 ---
 
+## Output Rules
+
+`output_rules` run after a tool executes successfully and before the gateway returns the response body to the caller.
+
+```yaml
+output_rules:
+  - name: string
+    description: string
+    priority: int
+    tools: [string]               # Glob patterns for tool names
+    roles: [string]               # Role names or "*"
+    environments: [string]        # Environment names or "*"
+    decision: OutputDecisionEnum  # ALLOW | REDACT | APPROVAL_REQUIRED | DENY
+    constraints:
+      patterns:
+        - field: "*"              # "*" = all string values, or dotted path like rows.*.email
+          pattern: string         # Python regex
+          label: string           # Audit / rationale label
+          replacement: string     # Used when decision=REDACT, default "[REDACTED]"
+      max_output_length: int      # Optional serialized output size threshold
+```
+
+### Output Decision Values
+
+| Value | Meaning |
+|-------|---------|
+| `ALLOW` | Return the original tool output |
+| `REDACT` | Return a deterministically redacted copy of the output |
+| `APPROVAL_REQUIRED` | Persist the output behind an approval token and return no body until approved |
+| `DENY` | Block the output entirely and return no body |
+
+### Output Constraint Behavior
+
+- `patterns`: Regex checks against output content. `field: "*"` recursively inspects all string values. Dotted paths such as `rows.*.email` match nested dict/list structures.
+- `replacement`: Only used for `REDACT`; matched strings are replaced inline.
+- `max_output_length`: Matches on serialized response size. With `REDACT`, the payload is replaced by a sentinel response instead of leaking the oversized body.
+
+---
+
 ## Constraints
 
 Constraints are rule-level checks applied when a rule matches. If any constraint fails, the rule is skipped and the next rule is evaluated.
@@ -258,6 +301,15 @@ constraints:
    d. Check trust_level_min/max if specified → skip if out of range
    e. Run constraint checkers (path, sql, url, arguments) → skip rule if any constraint fails
    f. MATCH FOUND → return PolicyDecision(decision=rule.decision, matched_rule=rule.name)
+
+After successful execution:
+
+5. Sort `output_rules` by priority (descending)
+6. For each output rule:
+   a. Check tools / roles / environments
+   b. Apply output constraints (`patterns`, `max_output_length`)
+   c. MATCH FOUND → return `OutputPolicyDecision`
+7. If no output rule matches → allow the output unchanged
 5. No rule matched → return PolicyDecision(decision=DENY, matched_rule="catch-all-deny")
 ```
 

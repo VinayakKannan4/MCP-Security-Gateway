@@ -19,6 +19,7 @@ class ApiKey(Base):
     role: Mapped[str] = mapped_column(String, nullable=False)
     trust_level: Mapped[int] = mapped_column(Integer, nullable=False)  # TrustLevel IntEnum value
     environment: Mapped[str] = mapped_column(String, nullable=False)
+    org_id: Mapped[str] = mapped_column(String, nullable=False, server_default="default")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -41,6 +42,7 @@ class AuditEventRow(Base):
     timestamp: Mapped[datetime] = mapped_column(index=True, nullable=False)
     caller_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
     caller_role: Mapped[str] = mapped_column(String, nullable=False)
+    org_id: Mapped[str] = mapped_column(String, nullable=False, server_default="default")
     environment: Mapped[str] = mapped_column(String, nullable=False)
     mcp_server: Mapped[str] = mapped_column(String, nullable=False)
     tool_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -54,6 +56,8 @@ class AuditEventRow(Base):
     execution_status: Mapped[str | None] = mapped_column(String, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     output_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    output_decision: Mapped[str] = mapped_column(String, nullable=False, server_default="ALLOW")
+    output_policy_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     redaction_flags: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default="[]")
     llm_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
     deterministic_rationale: Mapped[str] = mapped_column(Text, nullable=False)
@@ -72,6 +76,7 @@ class ApprovalRequestRow(Base):
     token: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     request_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
     caller_id: Mapped[str] = mapped_column(String, nullable=False)
+    org_id: Mapped[str] = mapped_column(String, nullable=False, server_default="default")
     tool_call: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # serialized ToolCall
     risk_explanation: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False)
@@ -79,6 +84,9 @@ class ApprovalRequestRow(Base):
     status: Mapped[str] = mapped_column(
         String, index=True, nullable=False, server_default="PENDING"
     )
+    scope: Mapped[str] = mapped_column(String, nullable=False, server_default="EXECUTION")
+    output_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    output_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     approver_id: Mapped[str | None] = mapped_column(String, nullable=True)
     decision_at: Mapped[datetime | None] = mapped_column(nullable=True)
     approver_note: Mapped[str | None] = mapped_column(Text, nullable=True)

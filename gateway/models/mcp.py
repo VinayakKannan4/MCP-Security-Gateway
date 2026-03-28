@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from gateway.models.policy import DecisionEnum
+from gateway.models.policy import DecisionEnum, OutputDecisionEnum
 
 
 class ToolCall(BaseModel):
@@ -33,5 +33,7 @@ class GatewayResponse(BaseModel):
     sanitized_args: dict[str, Any] | None = None
     approval_token: str | None = None  # set when decision is APPROVAL_REQUIRED
     policy_explanation: str
+    output_decision: OutputDecisionEnum = OutputDecisionEnum.ALLOW
+    output_policy_explanation: str | None = None
     risk_labels: list[str] = Field(default_factory=list)
     latency_ms: int

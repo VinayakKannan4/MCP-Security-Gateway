@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from gateway.agents.argument_guard import ArgumentGuardAgent
 from gateway.agents.risk_classifier import RiskClassifierAgent
+from gateway.api.v1 import admin as admin_router_module
 from gateway.api.v1 import approvals as approvals_router_module
 from gateway.api.v1 import audit as audit_router_module
 from gateway.api.v1 import gateway as gateway_router_module
@@ -22,6 +23,7 @@ from gateway.enforcement.executor import MCPExecutor
 from gateway.observability.otel import configure_otel
 from gateway.policy.engine import PolicyEngine
 from gateway.policy.loader import load_policy_for_environment
+from gateway.policy.output_engine import OutputPolicyEngine
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Policy engine (singleton — stateless, immutable after init)
     policy = load_policy_for_environment(cfg.policy_dir, cfg.environment)
     app.state.policy_engine = PolicyEngine(policy)
+    app.state.output_policy_engine = OutputPolicyEngine(policy)
 
     # LLM agent singletons (stateless — safe to reuse across requests)
     app.state.risk_classifier = RiskClassifierAgent(cfg)
@@ -91,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Routers
     app.include_router(gateway_router_module.router, prefix="/v1/gateway", tags=["gateway"])
+    app.include_router(admin_router_module.router, prefix="/v1/admin", tags=["admin"])
     app.include_router(approvals_router_module.router, prefix="/v1/approvals", tags=["approvals"])
     app.include_router(audit_router_module.router, prefix="/v1/audit", tags=["audit"])
 

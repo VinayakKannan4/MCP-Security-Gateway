@@ -28,27 +28,31 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-import bcrypt
 from fastapi import HTTPException
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.agents.argument_guard import ArgumentGuardAgent
 from gateway.agents.risk_classifier import RiskClassifierAgent
 from gateway.approval.manager import ApprovalManager
 from gateway.audit.logger import AuditLogger
+from gateway.auth.api_keys import ApiKeyAuthenticator
 from gateway.config import Settings
-from gateway.db.models import ApiKey
 from gateway.enforcement.errors import MCPTimeoutError, MCPToolError
 from gateway.enforcement.executor import MCPExecutor
-from gateway.models.approval import ApprovalRequest, ApprovalStatus
+from gateway.models.approval import ApprovalRequest, ApprovalResult, ApprovalScope
 from gateway.models.audit import AuditEvent, RedactionFlag
-from gateway.models.identity import CallerIdentity, TrustLevel
+from gateway.models.identity import CallerIdentity
 from gateway.models.mcp import GatewayResponse, MCPRequest
-from gateway.models.policy import DecisionEnum, PolicyDecision
+from gateway.models.policy import (
+    DecisionEnum,
+    OutputDecisionEnum,
+    OutputPolicyDecision,
+    PolicyDecision,
+)
 from gateway.models.risk import RiskAssessment
 from gateway.policy.engine import PolicyEngine
+from gateway.policy.output_engine import OutputPolicyEngine
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,11 @@ _DEFAULT_DECISION = PolicyDecision(
     matched_rule="pipeline-error",
     rationale="Pipeline did not complete normally.",
 )
+_DEFAULT_OUTPUT_DECISION = OutputPolicyDecision(
+    decision=OutputDecisionEnum.ALLOW,
+    matched_rule="output-not-evaluated",
+    rationale="Output inspection did not run.",
+)
 
 
 class EnforcementPipeline:
@@ -73,6 +82,7 @@ class EnforcementPipeline:
         risk_classifier: RiskClassifierAgent,
         argument_guard: ArgumentGuardAgent,
         policy_engine: PolicyEngine,
+        output_policy_engine: OutputPolicyEngine,
         audit_logger: AuditLogger,
         approval_manager: ApprovalManager,
         executor: MCPExecutor,
@@ -83,9 +93,11 @@ class EnforcementPipeline:
         self._risk_classifier = risk_classifier
         self._argument_guard = argument_guard
         self._policy_engine = policy_engine
+        self._output_policy_engine = output_policy_engine
         self._audit_logger = audit_logger
         self._approval_manager = approval_manager
         self._executor = executor
+        self._authenticator = ApiKeyAuthenticator(db)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -102,10 +114,13 @@ class EnforcementPipeline:
         identity: CallerIdentity | None = None
         risk: RiskAssessment = _DEFAULT_RISK
         decision: PolicyDecision = _DEFAULT_DECISION
+        output_decision: OutputPolicyDecision = _DEFAULT_OUTPUT_DECISION
         sanitized_args: dict[str, Any] = {}
         redaction_flags: list[RedactionFlag] = []
         tool_output: dict[str, Any] | None = None
+        response_output: dict[str, Any] | None = None
         approval_token: str | None = None
+        approver_id: str | None = None
         execution_status: str | None = None
 
         try:
@@ -128,9 +143,46 @@ class EnforcementPipeline:
                 # Step 6 — sanitize arguments
                 sanitized_args, redaction_flags = await self._sanitize_arguments(request)
 
-                if decision.decision == DecisionEnum.APPROVAL_REQUIRED:
+                if (
+                    request.approval_token
+                    and decision.decision != DecisionEnum.APPROVAL_REQUIRED
+                ):
+                    release_result = await self._consume_output_approval(
+                        request=request,
+                        identity=identity,
+                    )
+                    if release_result is None:
+                        decision = PolicyDecision(
+                            decision=DecisionEnum.DENY,
+                            matched_rule="invalid-output-approval-token",
+                            rationale=(
+                                "Supplied output approval token was invalid, expired, "
+                                "or already used."
+                            ),
+                        )
+                        output_decision = OutputPolicyDecision(
+                            decision=OutputDecisionEnum.DENY,
+                            matched_rule="invalid-output-approval-token",
+                            rationale=(
+                                "Output release requires a valid approved token "
+                                "bound to the same caller, org, and tool call."
+                            ),
+                        )
+                    else:
+                        approval_result, stored_output = release_result
+                        approver_id = approval_result.approver_id
+                        tool_output = stored_output
+                        response_output = stored_output
+                        output_decision = OutputPolicyDecision(
+                            decision=OutputDecisionEnum.ALLOW,
+                            matched_rule="approved-output-release",
+                            rationale="Previously withheld output released after human approval.",
+                            redacted_output=stored_output,
+                        )
+                        execution_status = "APPROVED_OUTPUT_RELEASE"
+                elif decision.decision == DecisionEnum.APPROVAL_REQUIRED:
                     # Step 7 — check / issue approval token
-                    pending_token = await self._check_approval(request, identity, risk)
+                    pending_token, approver_id = await self._check_approval(request, identity, risk)
                     if pending_token is None:
                         # Token approved — update decision and execute
                         decision = PolicyDecision(
@@ -139,7 +191,7 @@ class EnforcementPipeline:
                             rationale=f"Approved: {decision.rationale}",
                         )
                         tool_output, execution_status = await self._execute_safe(
-                            request, sanitized_args
+                            request, sanitized_args, identity
                         )
                     else:
                         # Approval pending — return early (audit still writes via finally)
@@ -147,8 +199,20 @@ class EnforcementPipeline:
                 else:
                     # Step 8 — execute (ALLOW / SANITIZE_AND_ALLOW)
                     tool_output, execution_status = await self._execute_safe(
-                        request, sanitized_args
+                        request, sanitized_args, identity
                     )
+
+                if (
+                    tool_output is not None
+                    and execution_status == "SUCCESS"
+                    and approval_token is None
+                ):
+                    output_decision, approval_token = await self._evaluate_output_policy(
+                        request=request,
+                        identity=identity,
+                        tool_output=tool_output,
+                    )
+                    response_output = self._build_response_output(tool_output, output_decision)
 
         except HTTPException:
             raise  # Let FastAPI handle 401 / 422 — audit still runs if identity is set
@@ -170,6 +234,7 @@ class EnforcementPipeline:
                     timestamp=datetime.utcnow(),
                     caller_id=identity.caller_id,
                     caller_role=identity.role,
+                    org_id=identity.org_id,
                     environment=identity.environment,
                     mcp_server=request.tool_call.server,
                     tool_name=request.tool_call.tool,
@@ -181,7 +246,11 @@ class EnforcementPipeline:
                     risk_score=risk.score,
                     matched_policy_rule=decision.matched_rule,
                     decision=decision.decision.value,
+                    approver_id=approver_id,
                     latency_ms=latency_ms,
+                    output_hash=self._hash_tool_output(tool_output),
+                    output_decision=output_decision.decision.value,
+                    output_policy_rationale=output_decision.rationale,
                     redaction_flags=redaction_flags,
                     deterministic_rationale=decision.rationale,
                     execution_status=execution_status,
@@ -194,10 +263,12 @@ class EnforcementPipeline:
         return GatewayResponse(
             request_id=request.request_id,
             decision=decision.decision,
-            result=tool_output,
+            result=response_output,
             sanitized_args=sanitized_args if decision.decision != DecisionEnum.DENY else None,
             approval_token=approval_token,
             policy_explanation=decision.rationale,
+            output_decision=output_decision.decision,
+            output_policy_explanation=output_decision.rationale,
             risk_labels=[label.value for label in risk.labels],
             latency_ms=latency_ms,
         )
@@ -216,23 +287,10 @@ class EnforcementPipeline:
     async def _resolve_identity(self, request: MCPRequest) -> CallerIdentity:
         """Step 2 — verify API key and return CallerIdentity.
 
-        Queries all active api_keys rows and bcrypt-compares the provided key.
-        Raises HTTPException(401) if the key is invalid or inactive.
+        Uses the shared API-key authenticator so admin and agent identities
+        resolve from the same source of truth.
         """
-        result = await self._db.execute(select(ApiKey).where(ApiKey.is_active == True))  # noqa: E712
-        rows = result.scalars().all()
-
-        for row in rows:
-            if bcrypt.checkpw(request.api_key.encode(), row.key_hash.encode()):
-                return CallerIdentity(
-                    caller_id=row.caller_id,
-                    role=row.role,
-                    trust_level=TrustLevel(row.trust_level),
-                    environment=row.environment,
-                    api_key_id=row.id,
-                )
-
-        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+        return await self._authenticator.resolve(request.api_key)
 
     def _validate_schema(self, request: MCPRequest) -> None:
         """Step 3 — validate tool arguments against the policy schema."""
@@ -266,37 +324,48 @@ class EnforcementPipeline:
         request: MCPRequest,
         identity: CallerIdentity,
         risk: RiskAssessment,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """Step 7 — check or issue an approval token.
 
         Returns:
-            None  — existing token is APPROVED; proceed to execution.
-            str   — new (or existing PENDING) token; caller should return early.
+            (None, approver_id) — existing token was valid and consumed; proceed.
+            (token, None)       — approval still required; caller should return early.
         """
         if request.approval_token:
             try:
-                result = await self._approval_manager.check_token(request.approval_token)
-                if result.status == ApprovalStatus.APPROVED:
-                    return None  # Approved — continue to execute
+                result = await self._approval_manager.consume_execution_token(
+                    request.approval_token,
+                    caller_id=identity.caller_id,
+                    org_id=identity.org_id,
+                    tool_call=request.tool_call.model_dump(mode="json"),
+                )
+                return None, result.approver_id
             except ValueError:
-                pass  # Token not found; fall through to issue a new one
+                logger.info(
+                    "approval token rejected request_id=%s caller=%s",
+                    request.request_id,
+                    identity.caller_id,
+                )
 
         # Issue a new approval request
         now = datetime.utcnow()
         approval_req = ApprovalRequest(
             request_id=request.request_id,
             caller_id=identity.caller_id,
+            org_id=identity.org_id,
             tool_call=request.tool_call,
             risk_explanation=risk.explanation,
             created_at=now,
             expires_at=now + timedelta(seconds=self._settings.approval_token_ttl_seconds),
+            scope=ApprovalScope.EXECUTION,
         )
-        return await self._approval_manager.issue_token(approval_req)
+        return await self._approval_manager.issue_token(approval_req), None
 
     async def _execute_safe(
         self,
         request: MCPRequest,
         sanitized_args: dict[str, Any],
+        identity: CallerIdentity,
     ) -> tuple[dict[str, Any] | None, str]:
         """Step 8 — execute the tool call. Returns (output, execution_status).
 
@@ -307,9 +376,82 @@ class EnforcementPipeline:
                 request.tool_call.server,
                 request.tool_call.tool,
                 sanitized_args,
+                identity,
+                request.request_id,
             )
             return output, "SUCCESS"
         except MCPToolError:
             return None, "TOOL_ERROR"
         except MCPTimeoutError:
             return None, "TIMEOUT"
+
+    async def _evaluate_output_policy(
+        self,
+        request: MCPRequest,
+        identity: CallerIdentity,
+        tool_output: dict[str, Any],
+    ) -> tuple[OutputPolicyDecision, str | None]:
+        decision = self._output_policy_engine.evaluate(
+            tool=request.tool_call.tool,
+            output=tool_output,
+            identity=identity,
+        )
+        if decision.decision != OutputDecisionEnum.APPROVAL_REQUIRED:
+            return decision, None
+
+        now = datetime.utcnow()
+        approval_req = ApprovalRequest(
+            request_id=request.request_id,
+            caller_id=identity.caller_id,
+            org_id=identity.org_id,
+            tool_call=request.tool_call,
+            risk_explanation=decision.rationale,
+            created_at=now,
+            expires_at=now + timedelta(seconds=self._settings.approval_token_ttl_seconds),
+            scope=ApprovalScope.OUTPUT_RELEASE,
+            output_payload=tool_output,
+            output_hash=self._hash_tool_output(tool_output),
+        )
+        token = await self._approval_manager.issue_token(approval_req)
+        return decision, token
+
+    async def _consume_output_approval(
+        self,
+        request: MCPRequest,
+        identity: CallerIdentity,
+    ) -> tuple[ApprovalResult, dict[str, Any]] | None:
+        if request.approval_token is None:
+            return None
+        try:
+            return await self._approval_manager.consume_output_token(
+                request.approval_token,
+                caller_id=identity.caller_id,
+                org_id=identity.org_id,
+                tool_call=request.tool_call.model_dump(mode="json"),
+            )
+        except ValueError:
+            logger.info(
+                "output approval token rejected request_id=%s caller=%s",
+                request.request_id,
+                identity.caller_id,
+            )
+            return None
+
+    @staticmethod
+    def _build_response_output(
+        tool_output: dict[str, Any],
+        output_decision: OutputPolicyDecision,
+    ) -> dict[str, Any] | None:
+        if output_decision.decision == OutputDecisionEnum.ALLOW:
+            return tool_output
+        if output_decision.decision == OutputDecisionEnum.REDACT:
+            return output_decision.redacted_output
+        return None
+
+    @staticmethod
+    def _hash_tool_output(tool_output: dict[str, Any] | None) -> str | None:
+        if tool_output is None:
+            return None
+        return hashlib.sha256(
+            json.dumps(tool_output, sort_keys=True, default=str).encode()
+        ).hexdigest()

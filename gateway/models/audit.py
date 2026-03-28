@@ -16,6 +16,7 @@ class AuditEvent(BaseModel):
     timestamp: datetime
     caller_id: str
     caller_role: str
+    org_id: str = "default"
     environment: str
     mcp_server: str
     tool_name: str
@@ -29,6 +30,8 @@ class AuditEvent(BaseModel):
     execution_status: str | None = None  # SUCCESS | TOOL_ERROR | TIMEOUT | None (not executed)
     latency_ms: int
     output_hash: str | None = None  # SHA-256 hex of tool output
+    output_decision: str = "ALLOW"
+    output_policy_rationale: str | None = None
     redaction_flags: list[RedactionFlag] = Field(default_factory=list)
     llm_explanation: str | None = None
     deterministic_rationale: str

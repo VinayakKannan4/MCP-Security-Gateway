@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     # Approval
     approval_token_ttl_seconds: int = 3600  # 1 hour
+    admin_session_ttl_seconds: int = 3600  # 1 hour
 
     # Observability
     otel_endpoint: str = "http://localhost:4317"
@@ -50,10 +51,11 @@ class Settings(BaseSettings):
 
     # MCP executor
     mcp_server_base_urls: dict[str, str] = {}  # e.g. {"filesystem-mcp": "http://localhost:9001"}
+    mcp_server_shared_secrets: dict[str, str] = {}
     mcp_tool_timeout_seconds: float = 30.0
 
     # Security
-    admin_api_key: str = ""  # separate key for admin endpoints
+    admin_api_key: str = ""  # deprecated; use /v1/admin/login sessions
 
 
 settings = Settings()

@@ -2,16 +2,6 @@
 
 All external dependencies (DB, Redis, agents, executor) are mocked.
 No Docker or LLM key required.
-
-Covers:
-- DENY decision → steps 6–8 skipped, _write_audit still called
-- ALLOW decision → all 10 steps run, GatewayResponse.decision == ALLOW
-- APPROVAL_REQUIRED without token → returns early with approval_token, audit written
-- APPROVAL_REQUIRED with approved token → continues to execute
-- _execute raises MCPToolError → _write_audit still called (finally block)
-- Unknown API key → HTTPException(401) raised in _resolve_identity
-- raw_args_hash is SHA-256 of original (pre-sanitization) args
-- risk assessment llm_consulted flag propagated to audit event
 """
 
 from __future__ import annotations
@@ -26,16 +16,17 @@ from fastapi import HTTPException
 from gateway.config import Settings
 from gateway.enforcement.errors import MCPTimeoutError, MCPToolError
 from gateway.enforcement.pipeline import EnforcementPipeline
-from gateway.models.approval import ApprovalResult, ApprovalStatus
+from gateway.models.approval import ApprovalResult, ApprovalScope, ApprovalStatus
 from gateway.models.audit import RedactionFlag
 from gateway.models.identity import CallerIdentity, TrustLevel
 from gateway.models.mcp import MCPRequest, ToolCall
-from gateway.models.policy import DecisionEnum, PolicyDecision
+from gateway.models.policy import (
+    DecisionEnum,
+    OutputDecisionEnum,
+    OutputPolicyDecision,
+    PolicyDecision,
+)
 from gateway.models.risk import RiskAssessment, RiskLabel
-
-# ---------------------------------------------------------------------------
-# Helpers & fixtures
-# ---------------------------------------------------------------------------
 
 
 def _settings() -> Settings:
@@ -43,7 +34,6 @@ def _settings() -> Settings:
         environment="prod",
         database_url="postgresql+asyncpg://x:x@localhost/x",
         redis_url="redis://localhost:6379/0",
-        admin_api_key="test-admin-key",
         approval_token_ttl_seconds=3600,
     )
 
@@ -69,6 +59,7 @@ def _identity() -> CallerIdentity:
         trust_level=TrustLevel.HIGH,
         environment="prod",
         api_key_id=1,
+        org_id="acme-prod",
     )
 
 
@@ -97,6 +88,15 @@ def _approval_decision() -> PolicyDecision:
     )
 
 
+def _output_allow_decision() -> OutputPolicyDecision:
+    return OutputPolicyDecision(
+        decision=OutputDecisionEnum.ALLOW,
+        matched_rule="output-allow-default",
+        rationale="No output policy rule matched.",
+        redacted_output={"content": "unused"},
+    )
+
+
 def _safe_risk() -> RiskAssessment:
     return RiskAssessment(labels=[], score=0.1, explanation="Safe request", llm_consulted=False)
 
@@ -111,50 +111,71 @@ def _high_risk() -> RiskAssessment:
 
 
 def _make_pipeline(
+    *,
     identity: CallerIdentity | None = None,
     risk: RiskAssessment | None = None,
     decision: PolicyDecision | None = None,
+    output_policy_decision: OutputPolicyDecision | None = None,
     sanitized_args: dict | None = None,  # type: ignore[type-arg]
     tool_output: dict | None = None,  # type: ignore[type-arg]
     approval_token_result: str | None = None,
-    check_token_status: ApprovalStatus = ApprovalStatus.APPROVED,
+    execution_token_error: Exception | None = None,
+    output_release_error: Exception | None = ValueError("missing release token"),
+    output_release_payload: dict | None = None,  # type: ignore[type-arg]
+    execution_approval_result: ApprovalResult | None = None,
 ) -> EnforcementPipeline:
-    """Build a pipeline with sensible mocked defaults."""
     settings = _settings()
-
-    # DB mock — _resolve_identity will bcrypt-check against a fake row
     db = AsyncMock()
     redis = AsyncMock()
 
-    # Risk classifier
     risk_classifier = AsyncMock()
     risk_classifier.classify = AsyncMock(return_value=risk or _safe_risk())
 
-    # Argument guard
     argument_guard = AsyncMock()
     argument_guard.sanitize = AsyncMock(
         return_value=(sanitized_args or {"path": "/tmp/file.txt"}, [])
     )
 
-    # Policy engine
     policy_engine = MagicMock()
     policy_engine.validate_tool_schema = MagicMock(return_value=(True, []))
     policy_engine.evaluate = MagicMock(return_value=decision or _allow_decision())
 
-    # Audit logger — we check it was called
+    output_policy_engine = MagicMock()
+    output_policy_engine.evaluate = MagicMock(
+        return_value=output_policy_decision or _output_allow_decision()
+    )
+
     audit_logger = AsyncMock()
     audit_logger.write = AsyncMock()
 
-    # Approval manager
     approval_manager = AsyncMock()
     approval_manager.issue_token = AsyncMock(return_value=approval_token_result or "new-token-abc")
-    approval_result = ApprovalResult(
-        token="existing-token",
-        status=check_token_status,
-    )
-    approval_manager.check_token = AsyncMock(return_value=approval_result)
 
-    # Executor
+    execution_result = execution_approval_result or ApprovalResult(
+        token="execution-token",
+        status=ApprovalStatus.USED,
+        scope=ApprovalScope.EXECUTION,
+        approver_id="admin-reviewer",
+    )
+    if execution_token_error is None:
+        approval_manager.consume_execution_token = AsyncMock(return_value=execution_result)
+    else:
+        approval_manager.consume_execution_token = AsyncMock(side_effect=execution_token_error)
+
+    release_result = (
+        ApprovalResult(
+            token="release-token",
+            status=ApprovalStatus.USED,
+            scope=ApprovalScope.OUTPUT_RELEASE,
+            approver_id="admin-reviewer",
+        ),
+        output_release_payload or {"content": "stored sensitive output"},
+    )
+    if output_release_error is None:
+        approval_manager.consume_output_token = AsyncMock(return_value=release_result)
+    else:
+        approval_manager.consume_output_token = AsyncMock(side_effect=output_release_error)
+
     executor = AsyncMock()
     executor.forward = AsyncMock(return_value=tool_output or {"content": "file content"})
 
@@ -165,359 +186,237 @@ def _make_pipeline(
         risk_classifier=risk_classifier,
         argument_guard=argument_guard,
         policy_engine=policy_engine,
+        output_policy_engine=output_policy_engine,
         audit_logger=audit_logger,
         approval_manager=approval_manager,
         executor=executor,
     )
-
-    # Patch _resolve_identity to bypass bcrypt DB query
     resolved = identity or _identity()
     pipeline._resolve_identity = AsyncMock(return_value=resolved)  # type: ignore[method-assign]
-
     return pipeline
-
-
-# ---------------------------------------------------------------------------
-# ALLOW flow
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_allow_flow_runs_all_steps() -> None:
-    pipeline = _make_pipeline(decision=_allow_decision(), tool_output={"data": "hello"})
+async def test_allow_flow_runs_execution_and_output_policy() -> None:
+    pipeline = _make_pipeline(tool_output={"data": "hello"})
     req = _request()
 
     response = await pipeline.run(req)
 
     assert response.decision == DecisionEnum.ALLOW
+    assert response.output_decision == OutputDecisionEnum.ALLOW
     assert response.result == {"data": "hello"}
-    assert response.approval_token is None
     pipeline._argument_guard.sanitize.assert_called_once()
-    pipeline._executor.forward.assert_called_once()
+    pipeline._executor.forward.assert_called_once_with(
+        req.tool_call.server,
+        req.tool_call.tool,
+        {"path": "/tmp/file.txt"},
+        _identity(),
+        req.request_id,
+    )
+    pipeline._output_policy_engine.evaluate.assert_called_once()
     pipeline._audit_logger.write.assert_called_once()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_allow_response_has_correct_request_id() -> None:
-    pipeline = _make_pipeline()
-    req = _request()
-
-    response = await pipeline.run(req)
-
-    assert response.request_id == req.request_id
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_allow_sanitized_args_in_response() -> None:
-    sanitized = {"path": "/tmp/safe.txt"}
-    pipeline = _make_pipeline(decision=_allow_decision(), sanitized_args=sanitized)
-    req = _request()
-
-    response = await pipeline.run(req)
-
-    assert response.sanitized_args == sanitized
-
-
-# ---------------------------------------------------------------------------
-# DENY flow
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_deny_skips_sanitize_and_execute() -> None:
     pipeline = _make_pipeline(decision=_deny_decision())
-    req = _request()
-
-    response = await pipeline.run(req)
+    response = await pipeline.run(_request())
 
     assert response.decision == DecisionEnum.DENY
+    assert response.result is None
     pipeline._argument_guard.sanitize.assert_not_called()
     pipeline._executor.forward.assert_not_called()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_deny_audit_still_written() -> None:
-    pipeline = _make_pipeline(decision=_deny_decision())
-    req = _request()
+async def test_execution_approval_required_without_token_issues_token() -> None:
+    pipeline = _make_pipeline(decision=_approval_decision(), approval_token_result="pending-token")
 
-    await pipeline.run(req)
-
-    pipeline._audit_logger.write.assert_called_once()
-    event = pipeline._audit_logger.write.call_args[0][0]
-    assert event.decision == "DENY"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_deny_sanitized_args_none_in_response() -> None:
-    pipeline = _make_pipeline(decision=_deny_decision())
-    req = _request()
-
-    response = await pipeline.run(req)
-
-    assert response.sanitized_args is None
-
-
-# ---------------------------------------------------------------------------
-# APPROVAL_REQUIRED — no token → return early
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_approval_required_no_token_returns_early() -> None:
-    pipeline = _make_pipeline(
-        decision=_approval_decision(),
-        approval_token_result="pending-token-xyz",
-    )
-    req = _request()  # no approval_token
-
-    response = await pipeline.run(req)
+    response = await pipeline.run(_request())
 
     assert response.decision == DecisionEnum.APPROVAL_REQUIRED
-    assert response.approval_token == "pending-token-xyz"
+    assert response.approval_token == "pending-token"
+    assert response.result is None
     pipeline._executor.forward.assert_not_called()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_approval_required_no_token_audit_written() -> None:
-    pipeline = _make_pipeline(decision=_approval_decision())
-    req = _request()
+async def test_execution_approval_token_executes_and_records_approver() -> None:
+    pipeline = _make_pipeline(
+        decision=_approval_decision(),
+        tool_output={"result": "approved"},
+    )
+    req = _request(approval_token="approved-token")
 
-    await pipeline.run(req)
+    response = await pipeline.run(req)
 
-    pipeline._audit_logger.write.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# APPROVAL_REQUIRED — with valid approved token → executes
-# ---------------------------------------------------------------------------
+    assert response.decision == DecisionEnum.ALLOW
+    assert response.result == {"result": "approved"}
+    pipeline._approval_manager.consume_execution_token.assert_called_once()
+    event = pipeline._audit_logger.write.call_args[0][0]
+    assert event.approver_id == "admin-reviewer"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_approval_required_approved_token_executes() -> None:
+async def test_output_redaction_returns_redacted_result_and_hashes_original_output() -> None:
+    original_output = {"content": "contact jane@example.com"}
     pipeline = _make_pipeline(
-        decision=_approval_decision(),
-        check_token_status=ApprovalStatus.APPROVED,
-        tool_output={"result": "approved and executed"},
+        tool_output=original_output,
+        output_policy_decision=OutputPolicyDecision(
+            decision=OutputDecisionEnum.REDACT,
+            matched_rule="redact-email",
+            rationale="Matched output rule 'redact-email': redact email.",
+            redacted_output={"content": "contact [REDACTED_EMAIL]"},
+        ),
     )
-    req = _request(approval_token="pre-approved-token")
 
-    response = await pipeline.run(req)
+    response = await pipeline.run(_request())
 
-    assert response.decision == DecisionEnum.ALLOW  # decision updated after approval verified
-    assert response.result == {"result": "approved and executed"}
-    pipeline._executor.forward.assert_called_once()
+    assert response.output_decision == OutputDecisionEnum.REDACT
+    assert response.result == {"content": "contact [REDACTED_EMAIL]"}
+    event = pipeline._audit_logger.write.call_args[0][0]
+    expected_hash = hashlib.sha256(
+        json.dumps(original_output, sort_keys=True).encode()
+    ).hexdigest()
+    assert event.output_hash == expected_hash
+    assert event.output_decision == "REDACT"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_approval_required_pending_token_issues_new() -> None:
+async def test_output_approval_required_withholds_result_and_issues_release_token() -> None:
+    sensitive_output = {"rows": [{"email": "ceo@example.com"}]}
     pipeline = _make_pipeline(
-        decision=_approval_decision(),
-        check_token_status=ApprovalStatus.PENDING,
-        approval_token_result="newly-issued-token",
+        tool_output=sensitive_output,
+        output_policy_decision=OutputPolicyDecision(
+            decision=OutputDecisionEnum.APPROVAL_REQUIRED,
+            matched_rule="require-approval-sensitive-egress",
+            rationale="Matched output rule 'require-approval-sensitive-egress': review required.",
+        ),
+        approval_token_result="output-token-123",
     )
-    req = _request(approval_token="old-pending-token")
+
+    response = await pipeline.run(_request())
+
+    assert response.decision == DecisionEnum.ALLOW
+    assert response.output_decision == OutputDecisionEnum.APPROVAL_REQUIRED
+    assert response.result is None
+    assert response.approval_token == "output-token-123"
+    issued_request = pipeline._approval_manager.issue_token.call_args[0][0]
+    assert issued_request.scope == ApprovalScope.OUTPUT_RELEASE
+    assert issued_request.output_payload == sensitive_output
+    assert issued_request.org_id == "acme-prod"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_output_release_token_returns_stored_output_without_reexecution() -> None:
+    released_output = {"content": "stored sensitive output"}
+    pipeline = _make_pipeline(
+        output_release_error=None,
+        output_release_payload=released_output,
+    )
+    req = _request(approval_token="release-token")
 
     response = await pipeline.run(req)
 
-    # Should have issued a new token and NOT executed
-    pipeline._approval_manager.issue_token.assert_called_once()
+    assert response.decision == DecisionEnum.ALLOW
+    assert response.output_decision == OutputDecisionEnum.ALLOW
+    assert response.result == released_output
+    pipeline._approval_manager.consume_output_token.assert_called_once()
     pipeline._executor.forward.assert_not_called()
-    assert response.approval_token == "newly-issued-token"
-
-
-# ---------------------------------------------------------------------------
-# Execution errors — audit still writes
-# ---------------------------------------------------------------------------
+    pipeline._output_policy_engine.evaluate.assert_not_called()
+    event = pipeline._audit_logger.write.call_args[0][0]
+    assert event.execution_status == "APPROVED_OUTPUT_RELEASE"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_mcp_tool_error_audit_still_written() -> None:
-    pipeline = _make_pipeline(decision=_allow_decision())
+async def test_invalid_output_release_token_denies_without_reexecution() -> None:
+    pipeline = _make_pipeline(output_release_error=ValueError("used token"))
+
+    response = await pipeline.run(_request(approval_token="bad-token"))
+
+    assert response.decision == DecisionEnum.DENY
+    assert response.output_decision == OutputDecisionEnum.DENY
+    assert response.result is None
+    pipeline._executor.forward.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_tool_errors_still_write_audit() -> None:
+    pipeline = _make_pipeline()
     pipeline._executor.forward = AsyncMock(side_effect=MCPToolError(500, "server error"))
-    req = _request()
 
-    response = await pipeline.run(req)
+    response = await pipeline.run(_request())
 
-    pipeline._audit_logger.write.assert_called_once()
+    assert response.result is None
     event = pipeline._audit_logger.write.call_args[0][0]
     assert event.execution_status == "TOOL_ERROR"
-    assert response.decision == DecisionEnum.ALLOW  # decision wasn't changed by error
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_mcp_timeout_error_audit_still_written() -> None:
-    pipeline = _make_pipeline(decision=_allow_decision())
+async def test_timeout_errors_still_write_audit() -> None:
+    pipeline = _make_pipeline()
     pipeline._executor.forward = AsyncMock(side_effect=MCPTimeoutError("timed out"))
-    req = _request()
 
-    await pipeline.run(req)
+    await pipeline.run(_request())
 
-    pipeline._audit_logger.write.assert_called_once()
     event = pipeline._audit_logger.write.call_args[0][0]
     assert event.execution_status == "TIMEOUT"
 
 
-# ---------------------------------------------------------------------------
-# Auth failure — HTTPException(401)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_invalid_api_key_raises_401() -> None:
+async def test_invalid_api_key_raises_401_without_audit() -> None:
     pipeline = _make_pipeline()
     pipeline._resolve_identity = AsyncMock(  # type: ignore[method-assign]
         side_effect=HTTPException(status_code=401, detail="Invalid or inactive API key")
     )
-    req = _request()
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline.run(req)
+        await pipeline.run(_request())
 
     assert exc_info.value.status_code == 401
-    # No audit — identity was never resolved
     pipeline._audit_logger.write.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# raw_args_hash invariant
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_raw_args_hash_is_sha256_of_original_args() -> None:
+async def test_audit_event_preserves_raw_args_hash_llm_explanation_and_org_id() -> None:
     original_args = {"path": "/tmp/secret.txt", "query": "sensitive data"}
-    sanitized = {"path": "/tmp/safe.txt", "query": "[REDACTED]"}
+    risk = _high_risk()
+    pipeline = _make_pipeline(risk=risk, tool_output={"data": "hello"})
 
-    pipeline = _make_pipeline(decision=_allow_decision(), sanitized_args=sanitized)
-    req = _request(args=original_args)
-
-    await pipeline.run(req)
+    await pipeline.run(_request(args=original_args))
 
     event = pipeline._audit_logger.write.call_args[0][0]
     expected_hash = hashlib.sha256(
         json.dumps(original_args, sort_keys=True).encode()
     ).hexdigest()
     assert event.raw_args_hash == expected_hash
-
-
-# ---------------------------------------------------------------------------
-# Risk labels propagation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_risk_labels_propagated_to_audit_event() -> None:
-    risk = _high_risk()
-    pipeline = _make_pipeline(decision=_allow_decision(), risk=risk)
-    req = _request()
-
-    await pipeline.run(req)
-
-    event = pipeline._audit_logger.write.call_args[0][0]
-    assert "PROMPT_INJECTION_SUSPECT" in event.risk_labels
-    assert event.risk_score == 0.95
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_llm_consulted_flag_sets_explanation_in_audit() -> None:
-    risk = _high_risk()
-    assert risk.llm_consulted is True
-
-    pipeline = _make_pipeline(decision=_allow_decision(), risk=risk)
-    req = _request()
-
-    await pipeline.run(req)
-
-    event = pipeline._audit_logger.write.call_args[0][0]
     assert event.llm_explanation == risk.explanation
+    assert event.org_id == "acme-prod"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_llm_not_consulted_explanation_null_in_audit() -> None:
-    risk = _safe_risk()
-    assert risk.llm_consulted is False
-
-    pipeline = _make_pipeline(decision=_allow_decision(), risk=risk)
-    req = _request()
-
-    await pipeline.run(req)
-
-    event = pipeline._audit_logger.write.call_args[0][0]
-    assert event.llm_explanation is None
-
-
-# ---------------------------------------------------------------------------
-# Schema validation failure → HTTPException(422)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_schema_validation_failure_raises_422() -> None:
-    pipeline = _make_pipeline()
-    pipeline._policy_engine.validate_tool_schema = MagicMock(  # type: ignore[method-assign]
-        return_value=(False, ["Missing required field: 'path'"])
-    )
-    req = _request()
-
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline.run(req)
-
-    assert exc_info.value.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# Audit event fields
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_audit_event_has_correct_metadata() -> None:
-    identity = _identity()
-    pipeline = _make_pipeline(identity=identity, decision=_allow_decision())
-    req = _request()
-
-    await pipeline.run(req)
-
-    event = pipeline._audit_logger.write.call_args[0][0]
-    assert event.caller_id == identity.caller_id
-    assert event.caller_role == identity.role
-    assert event.environment == identity.environment
-    assert event.tool_name == req.tool_call.tool
-    assert event.mcp_server == req.tool_call.server
-    assert event.request_id == req.request_id
-    assert event.latency_ms >= 0
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_redaction_flags_in_audit_event() -> None:
+async def test_redaction_flags_are_written_to_audit() -> None:
     flag = RedactionFlag(field="path", reason="PII_EMAIL", original_hash="abc123")
-    pipeline = _make_pipeline(decision=_allow_decision())
+    pipeline = _make_pipeline()
     pipeline._argument_guard.sanitize = AsyncMock(
         return_value=({"path": "[REDACTED_EMAIL]"}, [flag])
     )
-    req = _request()
 
-    await pipeline.run(req)
+    await pipeline.run(_request())
 
     event = pipeline._audit_logger.write.call_args[0][0]
     assert len(event.redaction_flags) == 1

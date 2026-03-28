@@ -11,6 +11,13 @@ class DecisionEnum(StrEnum):
     SANITIZE_AND_ALLOW = "SANITIZE_AND_ALLOW"
 
 
+class OutputDecisionEnum(StrEnum):
+    ALLOW = "ALLOW"
+    REDACT = "REDACT"
+    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    DENY = "DENY"
+
+
 class PathConstraintConfig(BaseModel):
     allowed_prefixes: list[str] = Field(default_factory=list)
     denied_patterns: list[str] = Field(default_factory=list)
@@ -49,6 +56,18 @@ class ConstraintConfig(BaseModel):
     arguments: ArgumentConstraintConfig | None = None
 
 
+class OutputPatternConstraint(BaseModel):
+    field: str = "*"  # field path, or * for all string values
+    pattern: str
+    label: str
+    replacement: str = "[REDACTED]"
+
+
+class OutputConstraintConfig(BaseModel):
+    patterns: list[OutputPatternConstraint] = Field(default_factory=list)
+    max_output_length: int | None = None
+
+
 class PolicyRule(BaseModel):
     name: str
     description: str = ""
@@ -60,6 +79,17 @@ class PolicyRule(BaseModel):
     trust_level_min: int | None = None
     trust_level_max: int | None = None
     constraints: ConstraintConfig = Field(default_factory=ConstraintConfig)
+
+
+class OutputPolicyRule(BaseModel):
+    name: str
+    description: str = ""
+    priority: int = 0
+    tools: list[str]
+    roles: list[str]
+    environments: list[str]
+    decision: OutputDecisionEnum
+    constraints: OutputConstraintConfig = Field(default_factory=OutputConstraintConfig)
 
 
 class GlobalDenyArgumentPattern(BaseModel):
@@ -103,6 +133,7 @@ class PolicyConfig(BaseModel):
     tool_schemas: dict[str, ToolSchema] = Field(default_factory=dict)
     roles: dict[str, RoleDefinition] = Field(default_factory=dict)
     rules: list[PolicyRule] = Field(default_factory=list)
+    output_rules: list[OutputPolicyRule] = Field(default_factory=list)
 
 
 class PolicyDecision(BaseModel):
@@ -111,3 +142,11 @@ class PolicyDecision(BaseModel):
     rationale: str
     requires_approval: bool = False
     constraints_applied: list[str] = Field(default_factory=list)
+
+
+class OutputPolicyDecision(BaseModel):
+    decision: OutputDecisionEnum
+    matched_rule: str
+    rationale: str
+    redacted_output: dict[str, Any] | None = None
+    matched_labels: list[str] = Field(default_factory=list)

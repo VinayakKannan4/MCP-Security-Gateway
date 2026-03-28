@@ -19,6 +19,7 @@ def _row_to_event(row: AuditEventRow) -> AuditEvent:
         timestamp=row.timestamp,
         caller_id=row.caller_id,
         caller_role=row.caller_role,
+        org_id=row.org_id or "default",
         environment=row.environment,
         mcp_server=row.mcp_server,
         tool_name=row.tool_name,
@@ -32,6 +33,8 @@ def _row_to_event(row: AuditEventRow) -> AuditEvent:
         execution_status=row.execution_status,
         latency_ms=row.latency_ms,
         output_hash=row.output_hash,
+        output_decision=row.output_decision or "ALLOW",
+        output_policy_rationale=row.output_policy_rationale,
         redaction_flags=[RedactionFlag(**f) for f in row.redaction_flags],
         llm_explanation=row.llm_explanation,
         deterministic_rationale=row.deterministic_rationale,
@@ -42,11 +45,16 @@ class AuditQuery:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_by_request_id(self, request_id: str) -> AuditEvent | None:
+    async def get_by_request_id(
+        self,
+        request_id: str,
+        org_id: str | None = None,
+    ) -> AuditEvent | None:
         """Fetch a single audit event by its unique request ID."""
-        result = await self._session.execute(
-            select(AuditEventRow).where(AuditEventRow.request_id == request_id)
-        )
+        stmt = select(AuditEventRow).where(AuditEventRow.request_id == request_id)
+        if org_id is not None:
+            stmt = stmt.where(AuditEventRow.org_id == org_id)
+        result = await self._session.execute(stmt)
         row = result.scalar_one_or_none()
         return _row_to_event(row) if row is not None else None
 
@@ -73,9 +81,10 @@ class AuditQuery:
         )
         return [_row_to_event(r) for r in result.scalars().all()]
 
-    async def list_recent(self, limit: int = 100) -> list[AuditEvent]:
+    async def list_recent(self, limit: int = 100, org_id: str | None = None) -> list[AuditEvent]:
         """List the most recent audit events across all callers."""
-        result = await self._session.execute(
-            select(AuditEventRow).order_by(desc(AuditEventRow.timestamp)).limit(limit)
-        )
+        stmt = select(AuditEventRow).order_by(desc(AuditEventRow.timestamp)).limit(limit)
+        if org_id is not None:
+            stmt = stmt.where(AuditEventRow.org_id == org_id)
+        result = await self._session.execute(stmt)
         return [_row_to_event(r) for r in result.scalars().all()]

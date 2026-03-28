@@ -122,3 +122,41 @@ rules:
     environments:
       - "*"
     decision: DENY
+
+output_rules:
+  - name: "deny-private-key-material-dev"
+    description: "Block private key material even in development"
+    priority: 100
+    tools:
+      - "*"
+    roles:
+      - "*"
+    environments:
+      - "*"
+    decision: DENY
+    constraints:
+      patterns:
+        - field: "*"
+          pattern: "-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----"
+          label: "PRIVATE_KEY"
+
+  - name: "redact-common-pii-dev"
+    description: "Redact common PII from dev output without introducing approval friction"
+    priority: 70
+    tools:
+      - "*"
+    roles:
+      - "*"
+    environments:
+      - "*"
+    decision: REDACT
+    constraints:
+      patterns:
+        - field: "*"
+          pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+          label: "PII_EMAIL"
+          replacement: "[REDACTED_EMAIL]"
+        - field: "*"
+          pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+          label: "PII_SSN"
+          replacement: "[REDACTED_SSN]"

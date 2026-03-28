@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
+import { AdminIdentity, logoutAdminSession, restoreAdminSession } from './api/auth'
 import { AuditPage } from './pages/AuditPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
+import { LoginPage } from './pages/LoginPage'
 
 const navStyle: React.CSSProperties = {
   display: 'flex',
@@ -40,13 +43,37 @@ function NavLink({ to, label }: { to: string; label: string }) {
   )
 }
 
-function Layout() {
+function Layout({
+  admin,
+  onLogout,
+}: {
+  admin: AdminIdentity
+  onLogout: () => Promise<void>
+}) {
   return (
     <>
       <nav style={navStyle}>
         <span style={brandStyle}>MCP Security Gateway</span>
         <NavLink to="/" label="Audit Log" />
         <NavLink to="/approvals" label="Approvals" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
+            {admin.caller_id} · {admin.org_id}
+          </span>
+          <button
+            onClick={() => void onLogout()}
+            style={{
+              border: '1px solid #334155',
+              borderRadius: '999px',
+              background: 'transparent',
+              color: '#cbd5e1',
+              padding: '6px 12px',
+              cursor: 'pointer',
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </nav>
       <main style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
         <Routes>
@@ -59,9 +86,44 @@ function Layout() {
 }
 
 export default function App() {
+  const [admin, setAdmin] = useState<AdminIdentity | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    void restoreAdminSession().then((identity) => {
+      setAdmin(identity)
+      setLoading(false)
+    })
+  }, [])
+
+  const handleLogout = async () => {
+    await logoutAdminSession()
+    setAdmin(null)
+  }
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'grid',
+          placeItems: 'center',
+          background: '#020617',
+          color: '#94a3b8',
+        }}
+      >
+        Restoring admin session...
+      </div>
+    )
+  }
+
+  if (!admin) {
+    return <LoginPage onLogin={setAdmin} />
+  }
+
   return (
     <BrowserRouter>
-      <Layout />
+      <Layout admin={admin} onLogout={handleLogout} />
     </BrowserRouter>
   )
 }

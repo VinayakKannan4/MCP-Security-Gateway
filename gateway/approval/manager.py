@@ -16,17 +16,18 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from math import ceil
 
 from redis.asyncio import Redis
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.cache.redis_client import delete, get_json, set_json
-from gateway.config import settings
 from gateway.db.models import ApprovalRequestRow
 from gateway.models.approval import (
     ApprovalRequest,
     ApprovalResult,
+    ApprovalScope,
     ApprovalStatus,
     ApprovalSummary,
 )
@@ -47,13 +48,16 @@ class ApprovalManager:
         Returns the token string from the request.
         """
         key = f"{_KEY_PREFIX}{request.token}"
+        ttl_seconds = ceil((request.expires_at - datetime.utcnow()).total_seconds())
+        if ttl_seconds <= 0:
+            raise ValueError("Approval request expiry must be in the future")
 
         # 1. Store in Redis with TTL — fast path for polling agents
         await set_json(
             self._redis,
             key,
             request.model_dump(mode="json"),
-            ttl=settings.approval_token_ttl_seconds,
+            ttl=ttl_seconds,
         )
 
         # 2. Store in Postgres for durability
@@ -61,11 +65,15 @@ class ApprovalManager:
             token=request.token,
             request_id=request.request_id,
             caller_id=request.caller_id,
+            org_id=request.org_id,
             tool_call=request.tool_call.model_dump(),
             risk_explanation=request.risk_explanation,
             created_at=request.created_at,
             expires_at=request.expires_at,
             status=request.status.value,
+            scope=request.scope.value,
+            output_payload=request.output_payload,
+            output_hash=request.output_hash,
             approver_id=request.approver_id,
             decision_at=request.decision_at,
             approver_note=request.approver_note,
@@ -77,12 +85,19 @@ class ApprovalManager:
         return request.token
 
     async def list_requests(
-        self, status_filter: ApprovalStatus | None = None, limit: int = 50
+        self,
+        status_filter: ApprovalStatus | None = None,
+        limit: int = 50,
+        org_id: str | None = None,
     ) -> list[ApprovalSummary]:
         """List approval requests, optionally filtered by status."""
+        await self._expire_stale_requests(org_id=org_id)
+
         stmt = select(ApprovalRequestRow).order_by(
             ApprovalRequestRow.created_at.desc()
         )
+        if org_id is not None:
+            stmt = stmt.where(ApprovalRequestRow.org_id == org_id)
         if status_filter is not None:
             stmt = stmt.where(ApprovalRequestRow.status == status_filter.value)
         stmt = stmt.limit(limit)
@@ -90,12 +105,14 @@ class ApprovalManager:
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
         return [
-            ApprovalSummary(
-                token=row.token,
-                caller_id=row.caller_id,
-                tool_name=row.tool_call.get("tool", "unknown"),
+                ApprovalSummary(
+                    token=row.token,
+                    caller_id=row.caller_id,
+                    org_id=row.org_id or "default",
+                    tool_name=row.tool_call.get("tool", "unknown"),
                 server=row.tool_call.get("server", "unknown"),
                 status=ApprovalStatus(row.status),
+                scope=ApprovalScope(row.scope or ApprovalScope.EXECUTION.value),
                 created_at=row.created_at,
                 expires_at=row.expires_at,
                 approver_id=row.approver_id,
@@ -104,7 +121,7 @@ class ApprovalManager:
             for row in rows
         ]
 
-    async def check_token(self, token: str) -> ApprovalResult:
+    async def check_token(self, token: str, expected_org_id: str | None = None) -> ApprovalResult:
         """Return the current status of an approval token.
 
         Checks Redis first (fast path). Falls back to Postgres if the key has
@@ -117,10 +134,28 @@ class ApprovalManager:
         # Fast path: Redis
         data = await get_json(self._redis, key)
         if data is not None:
+            expires_at = self._parse_datetime(data.get("expires_at"))
+            status = ApprovalStatus(data["status"])
+            if expires_at is not None and self._should_expire(status, expires_at):
+                await self._expire_token(token, expected_org_id=expected_org_id)
+                return ApprovalResult(
+                    token=token,
+                    status=ApprovalStatus.EXPIRED,
+                    scope=ApprovalScope(
+                        data.get("scope") or ApprovalScope.EXECUTION.value
+                    ),
+                    approver_id=data.get("approver_id"),
+                    note=data.get("approver_note"),
+                    decided_at=self._parse_datetime(data.get("decision_at")),
+                )
+
             decided_at_raw = data.get("decision_at")
             return ApprovalResult(
                 token=token,
-                status=ApprovalStatus(data["status"]),
+                status=status,
+                scope=ApprovalScope(
+                    data.get("scope") or ApprovalScope.EXECUTION.value
+                ),
                 approver_id=data.get("approver_id"),
                 note=data.get("approver_note"),
                 decided_at=(
@@ -129,28 +164,87 @@ class ApprovalManager:
             )
 
         # Fallback: Postgres
-        result = await self._session.execute(
-            select(ApprovalRequestRow).where(ApprovalRequestRow.token == token)
-        )
-        row = result.scalar_one_or_none()
-        if row is None:
-            raise ValueError(f"Approval token not found: {token!r}")
+        row = await self._get_request_row(token, expected_org_id=expected_org_id)
+        row = await self._expire_row_if_needed(row)
+        return self._row_to_result(row)
 
-        return ApprovalResult(
+    async def consume_execution_token(
+        self,
+        token: str,
+        caller_id: str,
+        org_id: str,
+        tool_call: dict[str, object],
+    ) -> ApprovalResult:
+        """Atomically consume an approved execution token for a caller + tool call."""
+        row = await self._consume_token(
             token=token,
-            status=ApprovalStatus(row.status),
-            approver_id=row.approver_id,
-            note=row.approver_note,
-            decided_at=row.decision_at,
+            caller_id=caller_id,
+            org_id=org_id,
+            tool_call=tool_call,
+            expected_scope=ApprovalScope.EXECUTION,
+        )
+        return self._row_to_result(row)
+
+    async def consume_output_token(
+        self,
+        token: str,
+        caller_id: str,
+        org_id: str,
+        tool_call: dict[str, object],
+    ) -> tuple[ApprovalResult, dict[str, object]]:
+        """Consume an approved output-release token and return the stored output payload."""
+        row = await self._consume_token(
+            token=token,
+            caller_id=caller_id,
+            org_id=org_id,
+            tool_call=tool_call,
+            expected_scope=ApprovalScope.OUTPUT_RELEASE,
+        )
+        if row.output_payload is None:
+            raise ValueError("Output approval token has no stored payload")
+        return self._row_to_result(row), row.output_payload
+
+    async def consume_approved_token(
+        self,
+        token: str,
+        caller_id: str,
+        org_id: str,
+        tool_call: dict[str, object],
+    ) -> ApprovalResult:
+        """Backward-compatible alias for execution-token consumption."""
+        return await self.consume_execution_token(token, caller_id, org_id, tool_call)
+
+    async def approve(
+        self,
+        token: str,
+        approver_id: str,
+        note: str = "",
+        expected_org_id: str | None = None,
+    ) -> ApprovalResult:
+        """Approve a pending token. Raises ValueError if not found or already decided."""
+        return await self._set_decision(
+            token,
+            ApprovalStatus.APPROVED,
+            approver_id,
+            note,
+            expected_org_id=expected_org_id,
         )
 
-    async def approve(self, token: str, approver_id: str, note: str = "") -> ApprovalResult:
-        """Approve a pending token. Raises ValueError if not found or already decided."""
-        return await self._set_decision(token, ApprovalStatus.APPROVED, approver_id, note)
-
-    async def deny(self, token: str, approver_id: str, note: str = "") -> ApprovalResult:
+    async def deny(
+        self,
+        token: str,
+        approver_id: str,
+        note: str = "",
+        expected_org_id: str | None = None,
+    ) -> ApprovalResult:
         """Deny a pending token. Raises ValueError if not found or already decided."""
-        return await self._set_decision(token, ApprovalStatus.DENIED, approver_id, note)
+        return await self._set_decision(
+            token,
+            ApprovalStatus.DENIED,
+            approver_id,
+            note,
+            expected_org_id=expected_org_id,
+        )
 
     async def _set_decision(
         self,
@@ -158,6 +252,7 @@ class ApprovalManager:
         new_status: ApprovalStatus,
         approver_id: str,
         note: str,
+        expected_org_id: str | None = None,
     ) -> ApprovalResult:
         """Apply an APPROVED or DENIED decision to a PENDING token.
 
@@ -165,12 +260,8 @@ class ApprovalManager:
         then deletes the Redis key so future check_token calls read from Postgres.
         """
         # Validate against Postgres — the authoritative source of truth
-        result = await self._session.execute(
-            select(ApprovalRequestRow).where(ApprovalRequestRow.token == token)
-        )
-        row = result.scalar_one_or_none()
-        if row is None:
-            raise ValueError(f"Approval token not found: {token!r}")
+        row = await self._get_request_row(token, expected_org_id=expected_org_id)
+        row = await self._expire_row_if_needed(row)
         if row.status != ApprovalStatus.PENDING.value:
             raise ValueError(f"Token already decided with status: {row.status!r}")
 
@@ -198,7 +289,118 @@ class ApprovalManager:
         return ApprovalResult(
             token=token,
             status=new_status,
+            scope=ApprovalScope(row.scope or ApprovalScope.EXECUTION.value),
             approver_id=approver_id,
             note=note or None,
             decided_at=now,
+        )
+
+    async def _expire_stale_requests(self, org_id: str | None = None) -> None:
+        """Mark any past-due pending/approved requests as EXPIRED in Postgres."""
+        stmt = update(ApprovalRequestRow).where(
+            ApprovalRequestRow.status.in_(
+                [
+                    ApprovalStatus.PENDING.value,
+                    ApprovalStatus.APPROVED.value,
+                ]
+            ),
+            ApprovalRequestRow.expires_at <= datetime.utcnow(),
+        )
+        if org_id is not None:
+            stmt = stmt.where(ApprovalRequestRow.org_id == org_id)
+        await self._session.execute(stmt.values(status=ApprovalStatus.EXPIRED.value))
+        await self._session.commit()
+
+    async def _get_request_row(
+        self,
+        token: str,
+        expected_org_id: str | None = None,
+    ) -> ApprovalRequestRow:
+        stmt = select(ApprovalRequestRow).where(ApprovalRequestRow.token == token)
+        if expected_org_id is not None:
+            stmt = stmt.where(ApprovalRequestRow.org_id == expected_org_id)
+        result = await self._session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise ValueError(f"Approval token not found: {token!r}")
+        return row
+
+    async def _expire_row_if_needed(self, row: ApprovalRequestRow) -> ApprovalRequestRow:
+        status = ApprovalStatus(row.status)
+        if not self._should_expire(status, row.expires_at):
+            return row
+
+        row.status = ApprovalStatus.EXPIRED.value
+        await self._session.commit()
+        await delete(self._redis, f"{_KEY_PREFIX}{row.token}")
+        return row
+
+    async def _expire_token(self, token: str, expected_org_id: str | None = None) -> None:
+        row = await self._get_request_row(token, expected_org_id=expected_org_id)
+        await self._expire_row_if_needed(row)
+
+    def _row_to_result(self, row: ApprovalRequestRow) -> ApprovalResult:
+        return ApprovalResult(
+            token=row.token,
+            status=ApprovalStatus(row.status),
+            scope=ApprovalScope(row.scope or ApprovalScope.EXECUTION.value),
+            approver_id=row.approver_id,
+            note=row.approver_note,
+            decided_at=row.decision_at,
+        )
+
+    async def _consume_token(
+        self,
+        token: str,
+        caller_id: str,
+        org_id: str,
+        tool_call: dict[str, object],
+        expected_scope: ApprovalScope,
+    ) -> ApprovalRequestRow:
+        row = await self._get_request_row(token, expected_org_id=org_id)
+        row = await self._expire_row_if_needed(row)
+
+        status = ApprovalStatus(row.status)
+        if status == ApprovalStatus.USED:
+            raise ValueError("Approval token has already been used")
+        if status != ApprovalStatus.APPROVED:
+            raise ValueError(f"Approval token is not approved: {row.status}")
+        if ApprovalScope(row.scope or ApprovalScope.EXECUTION.value) != expected_scope:
+            raise ValueError(f"Approval token scope mismatch: {row.scope}")
+        if row.caller_id != caller_id:
+            raise ValueError("Approval token does not belong to this caller")
+        if row.tool_call != tool_call:
+            raise ValueError("Approval token does not match this tool call")
+
+        consume_result = await self._session.execute(
+            update(ApprovalRequestRow)
+            .where(
+                ApprovalRequestRow.token == token,
+                ApprovalRequestRow.status == ApprovalStatus.APPROVED.value,
+            )
+            .values(status=ApprovalStatus.USED.value)
+        )
+        rowcount = getattr(consume_result, "rowcount", None)
+        if rowcount != 1:
+            await self._session.rollback()
+            raise ValueError("Approval token is no longer available for use")
+
+        await self._session.commit()
+        await delete(self._redis, f"{_KEY_PREFIX}{token}")
+
+        logger.debug("approval token consumed token=*** caller=%s scope=%s", caller_id, row.scope)
+        row.status = ApprovalStatus.USED.value
+        return row
+
+    @staticmethod
+    def _parse_datetime(value: object) -> datetime | None:
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return None
+
+    @staticmethod
+    def _should_expire(status: ApprovalStatus, expires_at: datetime) -> bool:
+        return (
+            expires_at <= datetime.utcnow()
+            and status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}
         )

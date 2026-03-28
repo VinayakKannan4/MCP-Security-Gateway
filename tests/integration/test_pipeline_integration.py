@@ -30,7 +30,12 @@ from gateway.enforcement.pipeline import EnforcementPipeline
 from gateway.models.approval import ApprovalStatus
 from gateway.models.identity import TrustLevel
 from gateway.models.mcp import MCPRequest, ToolCall
-from gateway.models.policy import DecisionEnum, PolicyDecision
+from gateway.models.policy import (
+    DecisionEnum,
+    OutputDecisionEnum,
+    OutputPolicyDecision,
+    PolicyDecision,
+)
 from gateway.models.risk import RiskAssessment
 
 # ---------------------------------------------------------------------------
@@ -39,6 +44,7 @@ from gateway.models.risk import RiskAssessment
 
 TEST_API_KEY = "integration-test-key-abc123"
 TEST_CALLER_ID = "integration-test-caller"
+TEST_ORG_ID = "acme-prod"
 
 
 def _settings() -> Settings:
@@ -84,6 +90,7 @@ async def seeded_api_key(db_session: AsyncSession) -> ApiKey:
         role="developer",
         trust_level=TrustLevel.HIGH.value,
         environment="prod",
+        org_id=TEST_ORG_ID,
         is_active=True,
     )
     db_session.add(row)
@@ -109,6 +116,15 @@ def _build_pipeline(
     policy_engine = MagicMock()
     policy_engine.validate_tool_schema = MagicMock(return_value=(True, []))
     policy_engine.evaluate = MagicMock(return_value=decision)
+    output_policy_engine = MagicMock()
+    output_policy_engine.evaluate = MagicMock(
+        return_value=OutputPolicyDecision(
+            decision=OutputDecisionEnum.ALLOW,
+            matched_rule="output-allow-default",
+            rationale="No output policy rule matched.",
+            redacted_output=tool_output or {"content": "file data"},
+        )
+    )
 
     audit_logger = AuditLogger(db_session)
     approval_manager = ApprovalManager(session=db_session, redis=redis_client)
@@ -123,6 +139,7 @@ def _build_pipeline(
         risk_classifier=risk_classifier,
         argument_guard=argument_guard,
         policy_engine=policy_engine,
+        output_policy_engine=output_policy_engine,
         audit_logger=audit_logger,
         approval_manager=approval_manager,
         executor=executor,
@@ -160,6 +177,7 @@ async def test_allow_flow_persists_audit_event(
     assert event is not None
     assert event.decision == "ALLOW"
     assert event.caller_id == TEST_CALLER_ID
+    assert event.org_id == TEST_ORG_ID
     assert event.execution_status == "SUCCESS"
 
 
@@ -268,3 +286,39 @@ async def test_approval_required_then_approved_executes(
 
     assert response2.result == {"file": "data"}
     pipeline._executor.forward.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_approved_token_is_single_use(
+    db_session: AsyncSession,
+    redis_client: Redis,  # type: ignore[type-arg]
+    seeded_api_key: ApiKey,
+) -> None:
+    decision = PolicyDecision(
+        decision=DecisionEnum.APPROVAL_REQUIRED,
+        matched_rule="approval-rule",
+        rationale="Requires approval",
+        requires_approval=True,
+    )
+    pipeline = _build_pipeline(db_session, redis_client, decision, tool_output={"file": "data"})
+
+    req1 = _request()
+    response1 = await pipeline.run(req1)
+    assert response1.approval_token is not None
+    token = response1.approval_token
+
+    approval_manager = ApprovalManager(session=db_session, redis=redis_client)
+    await approval_manager.approve(token, approver_id="admin-user")
+
+    req2 = _request(approval_token=token)
+    response2 = await pipeline.run(req2)
+    assert response2.decision == DecisionEnum.ALLOW
+    assert response2.result == {"file": "data"}
+
+    req3 = _request(approval_token=token)
+    response3 = await pipeline.run(req3)
+    assert response3.decision == DecisionEnum.APPROVAL_REQUIRED
+    assert response3.approval_token is not None
+    assert response3.approval_token != token
+    assert pipeline._executor.forward.call_count == 1  # type: ignore[attr-defined]
