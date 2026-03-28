@@ -62,7 +62,13 @@ export function ApprovalCard({ approval, onActionComplete }: ApprovalCardProps) 
       <div style={{ marginBottom: '12px' }}>
         <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>CALLER</span>
         <p style={{ margin: '2px 0', fontSize: '0.875rem', color: '#cbd5e1' }}>
-          {approval.caller_id}
+          {approval.caller_id} · {approval.org_id}
+        </p>
+      </div>
+      <div style={{ marginBottom: '12px' }}>
+        <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>SCOPE</span>
+        <p style={{ margin: '2px 0', fontSize: '0.875rem', color: '#fcd34d' }}>
+          {approval.scope}
         </p>
       </div>
       <div style={{ marginBottom: '12px' }}>

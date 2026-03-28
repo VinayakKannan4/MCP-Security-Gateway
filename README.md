@@ -8,7 +8,7 @@ If you're running MCP servers (filesystem, database, cloud APIs) and letting age
 
 ## How it works
 
-Every request passes through a 10-step enforcement pipeline:
+Every request passes through an 11-step enforcement pipeline:
 
 ```
 1. Validate request envelope
@@ -19,11 +19,16 @@ Every request passes through a 10-step enforcement pipeline:
 6. Sanitize arguments (redact PII, secrets)
 7. Check for human approval (if required)
 8. Execute the tool call (only if allowed)
-9. Write audit log  ← always, even on deny
-10. Return response
+9. Inspect output / egress policy  ← ALLOW | REDACT | APPROVAL_REQUIRED | DENY
+10. Write audit log  ← always, even on deny
+11. Return response
 ```
 
 The LLM is advisory. The policy engine is authoritative. A hard DENY cannot be overridden by any agent or LLM output.
+
+Approval tokens are enforced as single-use capabilities: once a human approves a request, the token is valid only for the same caller and tool call, only until expiry, and it is consumed on the first execution attempt.
+
+Outbound calls to upstream MCP servers are HMAC-signed per server. Configure `MCP_SERVER_SHARED_SECRETS` on the gateway and reject unsigned requests upstream if you want the gateway to be the only trusted execution path.
 
 ## Quick start
 
@@ -36,7 +41,6 @@ cd MCP-Security-Gateway
 uv sync
 cp .env.example .env
 # set LLM_API_KEY (Groq free tier: https://console.groq.com)
-# set ADMIN_API_KEY (any string, used for approval/audit admin endpoints)
 
 # unit tests run without Docker
 uv run python -m pytest -m unit
@@ -47,7 +51,7 @@ Start the full stack:
 ```bash
 docker compose up -d
 uv run alembic upgrade head
-uv run python scripts/seed_policies.py  # prints API keys — save them
+uv run python scripts/seed_policies.py  # prints a developer key and an admin key — save them
 ```
 
 Send a request:
@@ -74,6 +78,8 @@ curl -X POST http://localhost:8000/v1/gateway/invoke \
 | Dashboard | http://localhost:3000 |
 | Jaeger traces | http://localhost:16686 |
 
+The dashboard no longer embeds an admin secret at build time. Use the `dashboard-admin` key from `scripts/seed_policies.py` to create a short-lived bearer session via `/v1/admin/login`.
+
 ## Policy configuration
 
 Policies are YAML, deny-by-default, loaded at startup:
@@ -98,6 +104,28 @@ rules:
     tools: ["*"]
     roles: ["*"]
     decision: DENY
+
+output_rules:
+  - name: "deny-private-key-material"
+    tools: ["*"]
+    roles: ["*"]
+    decision: DENY
+    constraints:
+      patterns:
+        - field: "*"
+          pattern: "-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----"
+          label: "PRIVATE_KEY"
+
+  - name: "redact-common-pii"
+    tools: ["*"]
+    roles: ["*"]
+    decision: REDACT
+    constraints:
+      patterns:
+        - field: "*"
+          pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+          label: "PII_EMAIL"
+          replacement: "[REDACTED_EMAIL]"
 ```
 
 Full schema reference: [docs/policies/policy-schema.md](docs/policies/policy-schema.md)

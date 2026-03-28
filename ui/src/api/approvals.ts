@@ -3,9 +3,11 @@ import { apiClient } from './client'
 export interface ApprovalSummary {
   token: string
   caller_id: string
+  org_id: string
   tool_name: string
   server: string
-  status: 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED'
+  status: 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED' | 'USED'
+  scope: 'EXECUTION' | 'OUTPUT_RELEASE'
   created_at: string
   expires_at: string
   approver_id: string | null
@@ -19,14 +21,14 @@ export async function fetchPendingApprovals(): Promise<ApprovalSummary[]> {
   return response.data
 }
 
-export async function approveRequest(token: string): Promise<void> {
+export async function approveRequest(token: string, note = 'Approved via dashboard'): Promise<void> {
   await apiClient.post(`/v1/approvals/${token}/approve`, null, {
-    params: { approver_id: 'dashboard-admin', note: 'Approved via dashboard' },
+    params: { note },
   })
 }
 
-export async function denyRequest(token: string): Promise<void> {
+export async function denyRequest(token: string, note = 'Denied via dashboard'): Promise<void> {
   await apiClient.post(`/v1/approvals/${token}/deny`, null, {
-    params: { approver_id: 'dashboard-admin', note: 'Denied via dashboard' },
+    params: { note },
   })
 }

@@ -17,3 +17,4 @@ class CallerIdentity(BaseModel):
     trust_level: TrustLevel
     environment: str  # "dev" | "staging" | "prod"
     api_key_id: int  # FK to api_keys table
+    org_id: str = "default"

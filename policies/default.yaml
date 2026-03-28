@@ -277,3 +277,66 @@ rules:
     environments:
       - "*"
     decision: DENY
+
+output_rules:
+  - name: "deny-private-key-material"
+    description: "Never release private key material from any tool output"
+    priority: 100
+    tools:
+      - "*"
+    roles:
+      - "*"
+    environments:
+      - "*"
+    decision: DENY
+    constraints:
+      patterns:
+        - field: "*"
+          pattern: "-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----"
+          label: "PRIVATE_KEY"
+
+  - name: "require-approval-sensitive-prod-egress"
+    description: "Require human review before releasing likely sensitive records from prod or staging reads"
+    priority: 90
+    tools:
+      - "fs.read"
+      - "sql.query"
+    roles:
+      - "*"
+    environments:
+      - "staging"
+      - "prod"
+    decision: APPROVAL_REQUIRED
+    constraints:
+      max_output_length: 20000
+      patterns:
+        - field: "*"
+          pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+          label: "PII_SSN"
+        - field: "*"
+          pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+          label: "PII_EMAIL"
+        - field: "*"
+          pattern: "(?i)\\b(password|passwd|api[_-]?key|secret|access[_-]?token|refresh[_-]?token)\\b"
+          label: "SECRET_MARKER"
+
+  - name: "redact-common-pii"
+    description: "Redact common PII patterns before returning otherwise allowed output"
+    priority: 70
+    tools:
+      - "*"
+    roles:
+      - "*"
+    environments:
+      - "*"
+    decision: REDACT
+    constraints:
+      patterns:
+        - field: "*"
+          pattern: "\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+          label: "PII_EMAIL"
+          replacement: "[REDACTED_EMAIL]"
+        - field: "*"
+          pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+          label: "PII_SSN"
+          replacement: "[REDACTED_SSN]"

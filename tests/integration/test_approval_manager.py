@@ -7,15 +7,16 @@ from redis.asyncio import Redis
 
 from gateway.approval.manager import ApprovalManager
 from gateway.cache.redis_client import get_json
-from gateway.models.approval import ApprovalRequest, ApprovalStatus
+from gateway.models.approval import ApprovalRequest, ApprovalScope, ApprovalStatus
 from gateway.models.mcp import ToolCall
 
 
 def make_approval_request(request_id: str = "req-approval-integ-001") -> ApprovalRequest:
-    now = datetime(2026, 2, 24, 12, 0, 0)
+    now = datetime.utcnow().replace(microsecond=0)
     return ApprovalRequest(
         request_id=request_id,
         caller_id="integ-agent",
+        org_id="acme-prod",
         tool_call=ToolCall(
             server="filesystem-mcp",
             tool="fs.write",
@@ -104,6 +105,51 @@ async def test_check_token_raises_for_unknown_token(
         await approval_manager.check_token("completely-unknown-token")
 
 
+@pytest.mark.integration
+async def test_check_token_marks_expired_postgres_record(
+    approval_manager: ApprovalManager,
+) -> None:
+    request = ApprovalRequest(
+        request_id="req-check-expired-001",
+        caller_id="integ-agent",
+        org_id="acme-prod",
+        tool_call=ToolCall(
+            server="filesystem-mcp",
+            tool="fs.write",
+            arguments={"path": "/data/output.csv"},
+        ),
+        risk_explanation="High-risk write — requires approval",
+        created_at=datetime.utcnow() - timedelta(hours=2),
+        expires_at=datetime.utcnow() - timedelta(hours=1),
+    )
+    from gateway.db.models import ApprovalRequestRow
+
+    approval_manager._session.add(  # type: ignore[attr-defined]
+        ApprovalRequestRow(
+            token=request.token,
+            request_id=request.request_id,
+            caller_id=request.caller_id,
+            org_id=request.org_id,
+            tool_call=request.tool_call.model_dump(),
+            risk_explanation=request.risk_explanation,
+            created_at=request.created_at,
+            expires_at=request.expires_at,
+            status=ApprovalStatus.PENDING.value,
+            scope=ApprovalScope.EXECUTION.value,
+            output_payload=None,
+            output_hash=None,
+            approver_id=None,
+            decision_at=None,
+            approver_note=None,
+        )
+    )
+    await approval_manager._session.commit()  # type: ignore[attr-defined]
+
+    result = await approval_manager.check_token(request.token)
+
+    assert result.status == ApprovalStatus.EXPIRED
+
+
 # ---------------------------------------------------------------------------
 # approve
 # ---------------------------------------------------------------------------
@@ -162,6 +208,31 @@ async def test_approve_already_approved_raises(
 
     with pytest.raises(ValueError, match="already decided"):
         await approval_manager.approve(token, approver_id="admin-1")
+
+
+@pytest.mark.integration
+async def test_consume_approved_token_marks_token_used(
+    approval_manager: ApprovalManager,
+) -> None:
+    request = make_approval_request("req-consume-001")
+    token = await approval_manager.issue_token(request)
+    await approval_manager.approve(token, approver_id="admin-1")
+
+    result = await approval_manager.consume_approved_token(
+        token,
+        caller_id=request.caller_id,
+        org_id=request.org_id,
+        tool_call=request.tool_call.model_dump(mode="json"),
+    )
+
+    assert result.status == ApprovalStatus.USED
+    with pytest.raises(ValueError, match="already been used"):
+        await approval_manager.consume_approved_token(
+            token,
+            caller_id=request.caller_id,
+            org_id=request.org_id,
+            tool_call=request.tool_call.model_dump(mode="json"),
+        )
 
 
 # ---------------------------------------------------------------------------

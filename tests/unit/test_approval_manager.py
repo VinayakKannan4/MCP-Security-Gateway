@@ -15,7 +15,12 @@ from gateway.approval.manager import ApprovalManager
 from gateway.approval.notifier import ApprovalNotifier
 from gateway.cache.redis_client import get_json
 from gateway.db.models import ApprovalRequestRow
-from gateway.models.approval import ApprovalRequest, ApprovalResult, ApprovalStatus
+from gateway.models.approval import (
+    ApprovalRequest,
+    ApprovalResult,
+    ApprovalScope,
+    ApprovalStatus,
+)
 from gateway.models.mcp import ToolCall
 
 # ---------------------------------------------------------------------------
@@ -28,10 +33,11 @@ def make_tool_call() -> ToolCall:
 
 
 def make_approval_request(**overrides: object) -> ApprovalRequest:
-    now = datetime(2026, 2, 24, 12, 0, 0)
+    now = datetime.utcnow().replace(microsecond=0)
     defaults: dict[str, object] = {
         "request_id": "req-approval-001",
         "caller_id": "agent-x",
+        "org_id": "acme-prod",
         "tool_call": make_tool_call(),
         "risk_explanation": "High-risk write operation requires human sign-off",
         "created_at": now,
@@ -48,11 +54,15 @@ def make_approval_request_row(
         token=request.token,
         request_id=request.request_id,
         caller_id=request.caller_id,
+        org_id=request.org_id,
         tool_call=request.tool_call.model_dump(),
         risk_explanation=request.risk_explanation,
         created_at=request.created_at,
         expires_at=request.expires_at,
         status=status,
+        scope=request.scope.value,
+        output_payload=request.output_payload,
+        output_hash=request.output_hash,
         approver_id=None,
         decision_at=None,
         approver_note=None,
@@ -217,6 +227,133 @@ async def test_check_token_raises_for_unknown_token(
 
     with pytest.raises(ValueError, match="not found"):
         await ApprovalManager(mock_session, redis).check_token("no-such-token")
+
+
+@pytest.mark.unit
+async def test_check_token_marks_expired_rows(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    request = make_approval_request(expires_at=datetime.utcnow() - timedelta(minutes=1))
+    row = make_approval_request_row(request, status="PENDING")
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = row
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    result = await ApprovalManager(mock_session, redis).check_token(request.token)
+
+    assert result.status == ApprovalStatus.EXPIRED
+    assert row.status == ApprovalStatus.EXPIRED.value
+    mock_session.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# consume_approved_token
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_consume_approved_token_marks_token_used(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    request = make_approval_request()
+    row = make_approval_request_row(request, status="APPROVED")
+    row.approver_id = "admin-1"
+    row.approver_note = "Looks good"
+
+    select_mock = MagicMock()
+    select_mock.scalar_one_or_none.return_value = row
+    update_mock = MagicMock()
+    update_mock.rowcount = 1
+    mock_session.execute = AsyncMock(side_effect=[select_mock, update_mock])
+
+    result = await ApprovalManager(mock_session, redis).consume_approved_token(
+        request.token,
+        caller_id=request.caller_id,
+        org_id=request.org_id,
+        tool_call=request.tool_call.model_dump(mode="json"),
+    )
+
+    assert result.status == ApprovalStatus.USED
+    assert result.approver_id == "admin-1"
+    assert result.scope == ApprovalScope.EXECUTION
+    mock_session.commit.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_consume_approved_token_rejects_mismatched_tool_call(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    request = make_approval_request()
+    row = make_approval_request_row(request, status="APPROVED")
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = row
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with pytest.raises(ValueError, match="does not match this tool call"):
+        await ApprovalManager(mock_session, redis).consume_approved_token(
+            request.token,
+            caller_id=request.caller_id,
+            org_id=request.org_id,
+            tool_call=ToolCall(
+                server="filesystem-mcp",
+                tool="fs.write",
+                arguments={"path": "/data/other.csv"},
+            ).model_dump(mode="json"),
+        )
+
+
+@pytest.mark.unit
+async def test_consume_approved_token_rejects_used_token(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    request = make_approval_request()
+    row = make_approval_request_row(request, status="USED")
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = row
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with pytest.raises(ValueError, match="already been used"):
+        await ApprovalManager(mock_session, redis).consume_approved_token(
+            request.token,
+            caller_id=request.caller_id,
+            org_id=request.org_id,
+            tool_call=request.tool_call.model_dump(mode="json"),
+        )
+
+
+@pytest.mark.unit
+async def test_consume_output_token_returns_stored_payload(
+    mock_session: MagicMock,
+    redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    request = make_approval_request(
+        scope=ApprovalScope.OUTPUT_RELEASE,
+        output_payload={"content": "approved output"},
+        output_hash="f" * 64,
+    )
+    row = make_approval_request_row(request, status="APPROVED")
+    row.approver_id = "admin-1"
+
+    select_mock = MagicMock()
+    select_mock.scalar_one_or_none.return_value = row
+    update_mock = MagicMock()
+    update_mock.rowcount = 1
+    mock_session.execute = AsyncMock(side_effect=[select_mock, update_mock])
+
+    result, payload = await ApprovalManager(mock_session, redis).consume_output_token(
+        request.token,
+        caller_id=request.caller_id,
+        org_id=request.org_id,
+        tool_call=request.tool_call.model_dump(mode="json"),
+    )
+
+    assert result.status == ApprovalStatus.USED
+    assert result.scope == ApprovalScope.OUTPUT_RELEASE
+    assert payload == {"content": "approved output"}
 
 
 # ---------------------------------------------------------------------------
